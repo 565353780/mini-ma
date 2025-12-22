@@ -9,8 +9,7 @@ import matplotlib.cm as cm
 from typing import Optional, Union, Dict, Any
 
 from mini_ma.Model.loader import load_model
-from mini_ma.Method.path import createFileFolder
-from mini_ma.Method.plotting import make_matching_figure, make_matching_figure2
+from mini_ma.Method.plotting import make_matching_figure
 
 
 class Detector(object):

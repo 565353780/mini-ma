@@ -8,7 +8,7 @@ from mini_ma.Module.detector import Detector
 def demo():
     home = os.environ['HOME']
     model_file_path = home + '/chLi/Model/MINIMA/minima_lightglue.pth'
-    image1_file_path = home + '/chLi/Dataset/MM/Match/people_1/input.PNG'
+    image1_file_path = home + '/chLi/Dataset/MM/Match/inputimage/c6c113443a8ebb331ed307f33b1385c31a7d0c2fa8ed97b511511048e9e1a4af.jpg'
     image2_file_path = home + '/chLi/Dataset/MM/Match/people_1/gen.PNG'
     save_match_result_folder_path = home + '/chLi/Dataset/MM/Match/people_1/minima_sp_lg/'
 
