@@ -1,6 +1,8 @@
 cd ..
 git clone https://github.com/facebookresearch/pytorch3d.git
 
+pip install ninja
+
 pip3 install torch torchvision torchaudio \
   --index-url https://download.pytorch.org/whl/cu128
 
