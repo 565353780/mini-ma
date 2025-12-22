@@ -188,6 +188,8 @@ if __name__ == '__main__':
     print(args)
 
     save_dir = args.save_dir
+    os.makedirs(save_dir, exist_ok=True)
+
     save_figs = True
     tt = time.time()
     with warnings.catch_warnings():

@@ -1,5 +1,6 @@
-from typing import Union
 import torch
+from typing import Union, Tuple as tuple
+
 from .roma_models import roma_model, tiny_roma_v1_model
 
 weight_urls = {
