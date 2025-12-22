@@ -2,10 +2,15 @@ import os
 import cv2
 import torch
 import numpy as np
+import matplotlib
+matplotlib.use('Agg')  # 使用非交互式后端
+import matplotlib.pyplot as plt
+import matplotlib.cm as cm
 from typing import Optional, Union, Dict, Any
 
 from mini_ma.Model.loader import load_model
 from mini_ma.Method.path import createFileFolder
+from mini_ma.Method.plotting import make_matching_figure, make_matching_figure2
 
 
 class Detector(object):
@@ -44,8 +49,6 @@ class Detector(object):
         self.method = method
         self.device = device or ('cuda' if torch.cuda.is_available() else 'cpu')
         self.matcher = None
-        self.matcher_from_paths = None
-        self.matcher_from_cv_imgs = None
 
         # 创建参数对象
         class Args:
@@ -110,33 +113,20 @@ class Detector(object):
 
         self.args.ckpt = model_file_path
 
-        try:
-            # 加载模型（支持路径和图片数据两种方式）
-            self.matcher_from_paths = load_model(
-                self.method, 
-                self.args, 
-                use_path=True, 
-                test_orginal_megadepth=False
-            )
-            self.matcher_from_cv_imgs = load_model(
-                self.method, 
-                self.args, 
-                use_path=False, 
-                test_orginal_megadepth=False
-            )
-            self.matcher = self.matcher_from_paths  # 默认使用路径方式
-            print(f'[INFO][Detector::loadModel]')
-            print(f'\t Successfully loaded {self.method} model from: {model_file_path}')
-            return True
-        except Exception as e:
-            print('[ERROR][Detector::loadModel]')
-            print(f'\t Failed to load model: {e}')
-            return False
+        self.matcher = load_model(
+            self.method,
+            self.args,
+            use_path=False,
+            test_orginal_megadepth=False,
+        )
+        print(f'[INFO][Detector::loadModel]')
+        print(f'\t Successfully loaded {self.method} model from: {model_file_path}')
+        return True
 
     def detect(
         self,
-        image1: Union[str, np.ndarray],
-        image2: Union[str, np.ndarray],
+        image1: np.ndarray,
+        image2: np.ndarray,
         K0: Optional[np.ndarray] = None,
         K1: Optional[np.ndarray] = None,
         dist0: Optional[np.ndarray] = None,
@@ -146,8 +136,8 @@ class Detector(object):
         检测两张图片的匹配点
 
         Args:
-            image1: 第一张图片（文件路径或 numpy 数组）
-            image2: 第二张图片（文件路径或 numpy 数组）
+            image1: 第一张图片（numpy 数组，BGR 格式）
+            image2: 第二张图片（numpy 数组，BGR 格式）
             K0: 第一张图片的相机内参矩阵（可选）
             K1: 第二张图片的相机内参矩阵（可选）
             dist0: 第一张图片的畸变系数（可选）
@@ -162,55 +152,12 @@ class Detector(object):
             - match_time: 匹配耗时
             如果失败返回 None
         """
-        # 如果模型未加载，尝试使用默认路径加载
-        if self.matcher is None:
-            if self.args.ckpt is not None and os.path.exists(self.args.ckpt):
-                if not self.loadModel(self.args.ckpt):
-                    return None
-            else:
-                print('[ERROR][Detector::detect]')
-                print('\t Model not loaded! Please call loadModel() first or provide model_file_path in __init__.')
-                return None
-
-        try:
-            # 判断输入类型
-            if isinstance(image1, str) and isinstance(image2, str):
-                # 文件路径方式
-                if not os.path.exists(image1):
-                    print('[ERROR][Detector::detect]')
-                    print('\t image1 file not exist!')
-                    print('\t image1:', image1)
-                    return None
-                if not os.path.exists(image2):
-                    print('[ERROR][Detector::detect]')
-                    print('\t image2 file not exist!')
-                    print('\t image2:', image2)
-                    return None
-                
-                result = self.matcher_from_paths(
-                    image1, image2, 
-                    K0=K0, K1=K1, 
-                    dist0=dist0, dist1=dist1
-                )
-            elif isinstance(image1, np.ndarray) and isinstance(image2, np.ndarray):
-                # numpy 数组方式
-                result = self.matcher_from_cv_imgs(
-                    image1, image2,
-                    K0=K0, K1=K1,
-                    dist0=dist0, dist1=dist1
-                )
-            else:
-                print('[ERROR][Detector::detect]')
-                print('\t image1 and image2 must be both file paths or both numpy arrays!')
-                return None
-            
-            return result
-        except Exception as e:
-            print('[ERROR][Detector::detect]')
-            print(f'\t Detection failed: {e}')
-            import traceback
-            traceback.print_exc()
-            return None
+        result = self.matcher(
+            image1, image2,
+            K0=K0, K1=K1,
+            dist0=dist0, dist1=dist1,
+        )
+        return result
 
     def detectImageFilePair(
         self,
@@ -224,6 +171,9 @@ class Detector(object):
         """
         从文件路径检测图片对
         
+        读取图片文件并将其对应数据传入 detect() 来获取结果。
+        图片处理方式位于 Method/data_io_*.py
+        
         Args:
             image1_file_path: 第一张图片文件路径
             image2_file_path: 第二张图片文件路径
@@ -231,33 +181,139 @@ class Detector(object):
             K1: 第二张图片的相机内参矩阵（可选）
             dist0: 第一张图片的畸变系数（可选）
             dist1: 第二张图片的畸变系数（可选）
-        
+
         Returns:
             匹配结果字典，如果失败返回 None
         """
-        return self.detect(image1_file_path, image2_file_path, K0=K0, K1=K1, dist0=dist0, dist1=dist1)
-    
-    def detectImageDataPair(
-        self,
-        image1_data: np.ndarray,
-        image2_data: np.ndarray,
-        K0: Optional[np.ndarray] = None,
-        K1: Optional[np.ndarray] = None,
-        dist0: Optional[np.ndarray] = None,
-        dist1: Optional[np.ndarray] = None,
-    ) -> Union[Dict[str, Any], None]:
-        """
-        从图片数据（numpy 数组）检测图片对
-        
-        Args:
-            image1_data: 第一张图片数据（numpy 数组，BGR 格式）
-            image2_data: 第二张图片数据（numpy 数组，BGR 格式）
-            K0: 第一张图片的相机内参矩阵（可选）
-            K1: 第二张图片的相机内参矩阵（可选）
-            dist0: 第一张图片的畸变系数（可选）
-            dist1: 第二张图片的畸变系数（可选）
-        
-        Returns:
-            匹配结果字典，如果失败返回 None
-        """
+        if self.method == "roma":
+            # RoMa 使用彩色图片
+            read_color = True
+        else:
+            # LoFTR, sp_lg, xoftr 使用灰度图片
+            read_color = False
+
+        imread_flag = cv2.IMREAD_COLOR if read_color else cv2.IMREAD_GRAYSCALE
+
+        image1_data = cv2.imread(image1_file_path, imread_flag)
+        image2_data = cv2.imread(image2_file_path, imread_flag)
+
+        if image1_data is None:
+            print('[ERROR][Detector::detectImageFilePair]')
+            print('\t Failed to read image1 file!')
+            print('\t image1_file_path:', image1_file_path)
+            return None
+        if image2_data is None:
+            print('[ERROR][Detector::detectImageFilePair]')
+            print('\t Failed to read image2 file!')
+            print('\t image2_file_path:', image2_file_path)
+            return None
+
         return self.detect(image1_data, image2_data, K0=K0, K1=K1, dist0=dist0, dist1=dist1)
+
+    def renderMatchResult(
+        self,
+        match_result: Dict[str, Any],
+        img0_path: str,
+        img1_path: str,
+        show_inliers_only: bool = False,
+        dpi: int = 150,
+    ) -> np.ndarray:
+        """
+        渲染匹配结果，生成可视化图片
+        严格按照 demo.py 中 eval_relapose 的逻辑实现
+
+        Args:
+            match_result: detect() 方法返回的匹配结果字典
+            image0_path: 第一张图片的文件路径（可选，如果match_result中没有img0）
+            image1_path: 第二张图片的文件路径（可选，如果match_result中没有img1）
+            save_path: 保存路径（可选），如果提供则保存图片到该路径
+            show_inliers_only: 是否只显示内点（默认False，显示所有匹配点）
+            dpi: 图片分辨率（默认150）
+
+        Returns:
+            numpy数组（BGR格式），可以直接用cv2.imshow()显示或cv2.imwrite()保存
+            如果失败返回None
+        """
+        mkpts0 = match_result.get('mkpts0')
+        mkpts1 = match_result.get('mkpts1')
+        mconf = match_result.get('mconf')
+
+        if mkpts0 is None or mkpts1 is None:
+            print('[ERROR][Detector::renderMatchResult]')
+            print('\t Missing mkpts0 or mkpts1 in match_result!')
+            return None
+
+        img0_color = cv2.imread(img0_path)
+        img1_color = cv2.imread(img1_path)
+
+        if img0_color is None or img1_color is None:
+            print('[ERROR][Detector::renderMatchResult]')
+            print('\t Failed to load images!')
+            return None
+
+        img0_color = cv2.cvtColor(img0_color, cv2.COLOR_BGR2RGB)
+        img1_color = cv2.cvtColor(img1_color, cv2.COLOR_BGR2RGB)
+
+        if len(mconf) > 0:
+            conf_min = mconf.min()
+            conf_max = mconf.max()
+            mconf = (mconf - conf_min) / (conf_max - conf_min + 1e-5)
+        color = cm.jet(mconf)
+
+        if len(mkpts0) >= 4:
+            ret_H, inliers = cv2.findHomography(mkpts0, mkpts1, cv2.RANSAC)
+        else:
+            inliers = None
+            ret_H = None
+
+        print(f"Number of inliers: {inliers.sum() if inliers is not None else 0}")
+
+        if show_inliers_only:
+            # 使用 save_matching_figure 的逻辑：只显示内点
+            if inliers is None or len(inliers) == 0:
+                print('[WARNING][Detector::renderMatchResult]')
+                print('\t No inliers to display!')
+                return None
+
+            inlier_mask = inliers.astype(bool).squeeze()
+
+            if inlier_mask is None or len(inlier_mask) == 0:
+                print('[WARNING][Detector::renderMatchResult]')
+                print('\t No inliers after filtering!')
+                return None
+
+            mkpts0_inliers = mkpts0[inlier_mask]
+            mkpts1_inliers = mkpts1[inlier_mask]
+            color_inliers = color[inlier_mask]
+        else:
+            mkpts0_inliers = mkpts0
+            mkpts1_inliers = mkpts1
+            color_inliers = color
+
+        text = [f'Matches:{len(mkpts0_inliers)}']
+
+        fig = make_matching_figure(
+            img0_color, img1_color,
+            mkpts0_inliers, mkpts1_inliers,
+            color_inliers,
+            text=text,
+            dpi=dpi,
+            path=None
+        )
+
+        fig.canvas.draw()
+        w, h = fig.canvas.get_width_height()
+
+        # 从canvas获取RGB数据
+        try:
+            buf = np.frombuffer(fig.canvas.tostring_rgb(), dtype=np.uint8)
+            buf = buf.reshape((h, w, 3))
+        except (AttributeError, TypeError):
+            buf = np.frombuffer(fig.canvas.buffer_rgba(), dtype=np.uint8)
+            buf = buf.reshape((h, w, 4))[:, :, :3]
+
+        img_result = cv2.cvtColor(buf, cv2.COLOR_RGB2BGR)
+
+        plt.close(fig)
+
+        return img_result
