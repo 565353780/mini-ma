@@ -9,6 +9,7 @@ import matplotlib.cm as cm
 from typing import Optional, Union, Dict, Any
 
 from mini_ma.Model.loader import load_model
+from mini_ma.Method.io import loadImage
 from mini_ma.Method.plotting import make_matching_figure
 
 
@@ -186,24 +187,22 @@ class Detector(object):
         """
         if self.method == "roma":
             # RoMa 使用彩色图片
-            read_color = True
+            is_gray = False
         else:
             # LoFTR, sp_lg, xoftr 使用灰度图片
-            read_color = False
+            is_gray = True
 
-        imread_flag = cv2.IMREAD_COLOR if read_color else cv2.IMREAD_GRAYSCALE
-
-        image1_data = cv2.imread(image1_file_path, imread_flag)
-        image2_data = cv2.imread(image2_file_path, imread_flag)
+        image1_data = loadImage(image1_file_path, is_gray)
+        image2_data = loadImage(image2_file_path, is_gray)
 
         if image1_data is None:
             print('[ERROR][Detector::detectImageFilePair]')
-            print('\t Failed to read image1 file!')
+            print('\t loadImage failed!')
             print('\t image1_file_path:', image1_file_path)
             return None
         if image2_data is None:
             print('[ERROR][Detector::detectImageFilePair]')
-            print('\t Failed to read image2 file!')
+            print('\t loadImage failed!')
             print('\t image2_file_path:', image2_file_path)
             return None
 
