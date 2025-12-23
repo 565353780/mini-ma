@@ -24,10 +24,22 @@ def demo():
 
     camera_info = mesh_matcher.queryCamera(
         mesh,
-        pos=[-2, 0, 0],
+        pos=[
+            [0, 0, -3],
+            [0, 0, -2],
+            [0, 0, 0],
+            [0, 0, 2],
+            [0, 0, 3],
+        ],
+        save_debug_image_path=save_match_result_folder_path + 'debug.png'
     )
+
     print(mesh)
-    print(camera_info)
+    for key, value in camera_info.items():
+        try:
+            print(key, value.shape)
+        except:
+            pass
     exit()
 
     match_result = mesh_matcher.matchMeshFileToImageFile(image_file_path, mesh_file_path)

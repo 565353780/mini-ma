@@ -1,5 +1,5 @@
 cd ..
-git clone https://github.com/facebookresearch/pytorch3d.git
+git clone https://github.com/NVlabs/nvdiffrast.git
 git clone https://github.com/565353780/camera-control.git
 
 cd camera-control
@@ -14,5 +14,5 @@ pip install numpy opencv_python einops kornia loguru yacs \
   tqdm yq jupyterlab matplotlib pytorch-lightning scipy \
   joblib trimesh open3d iopath
 
-cd ../pytorch3d
+cd ../nvdiffrast
 python setup.py install

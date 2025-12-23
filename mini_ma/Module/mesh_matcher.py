@@ -1,14 +1,10 @@
 import os
+import cv2
 import torch
 import trimesh
 import numpy as np
+import nvdiffrast.torch as dr
 from typing import Optional, Union
-from pytorch3d.structures import Meshes
-from pytorch3d.renderer import (
-    RasterizationSettings,
-    MeshRasterizer,
-    PerspectiveCameras,
-)
 
 from camera_control.Method.render import create_line_set
 from camera_control.Module.camera import Camera
@@ -31,21 +27,23 @@ class MeshMatcher(object):
         self.device = self.detector.device
         '''
 
-        self.device = 'cuda:7'
+        self.device = torch.device('cuda:7')
         return
 
     def loadMeshFile(
         self,
         mesh_file_path: str,
-    ) -> Optional[Meshes]:
+        color: list=[178, 178, 178],
+    ) -> Optional[trimesh.Trimesh]:
         """
-        使用trimesh读取三角网格文件到指定device，支持多种格式（.obj, .ply, .glb, .stl, .off等）
+        使用trimesh读取三角网格文件，支持多种格式（.obj, .ply, .glb, .stl, .off等）
 
         Args:
             mesh_file_path: 网格文件路径（trimesh支持的所有格式）
+            color: 顶点颜色，默认[0.7, 0.7, 1]（浅蓝色）
 
         Returns:
-            Meshes对象，已移动到指定device
+            trimesh.Trimesh对象
         """
         if not os.path.exists(mesh_file_path):
             print('[ERROR][MeshMatcher::loadMeshFile]')
@@ -53,120 +51,269 @@ class MeshMatcher(object):
             print('\t mesh_file_path:', mesh_file_path)
             return None
 
-        # 使用trimesh统一加载所有格式的三角网格文件
         mesh_trimesh = trimesh.load(mesh_file_path)
 
-        # 如果加载的是Scene（包含多个mesh），合并所有mesh
         if isinstance(mesh_trimesh, trimesh.Scene):
             mesh_trimesh = trimesh.util.concatenate(
                 [g for g in mesh_trimesh.geometry.values() if isinstance(g, trimesh.Trimesh)]
             )
 
-        # 检查是否是Trimesh对象
         if not isinstance(mesh_trimesh, trimesh.Trimesh):
             raise ValueError(f"无法从文件 {mesh_file_path} 中提取三角网格数据")
 
-        # 提取顶点和面数据
-        verts = torch.from_numpy(mesh_trimesh.vertices).float()
-        faces_idx = torch.from_numpy(mesh_trimesh.faces).long()
+        # 打印边界框信息
+        min_bound = np.min(mesh_trimesh.vertices, axis=0)
+        max_bound = np.max(mesh_trimesh.vertices, axis=0)
+        print('loaded mesh bbox:')
+        print(min_bound)
+        print(max_bound)
 
-        verts = verts.to(self.device)
-        faces_idx = faces_idx.to(self.device)
-
-        # 创建Meshes对象
-        mesh = Meshes(verts=[verts], faces=[faces_idx])
-
-        return mesh
+        # 如果mesh没有顶点颜色，添加默认颜色
+        if not hasattr(mesh_trimesh.visual, 'vertex_colors') or mesh_trimesh.visual.vertex_colors is None:
+            # 创建顶点颜色数组
+            num_verts = len(mesh_trimesh.vertices)
+            vertex_colors = np.tile(np.array(color), (num_verts, 1))
+            mesh_trimesh.visual.vertex_colors = vertex_colors
+        return mesh_trimesh
 
     def queryCamera(
         self,
-        mesh: Meshes,
+        mesh: trimesh.Trimesh,
         width: int = 640,
         height: int = 480,
         fx: float = 500.0,
         fy: float = 500.0,
         cx: float = 320.0,
         cy: float = 240.0,
-        pos: Union[torch.Tensor, np.ndarray, list] = [0, 0, 0],
-        rot: Union[torch.Tensor, np.ndarray, list] = np.eye(3),
+        pos: Union[torch.Tensor, np.ndarray, list] = None,
+        rot: Union[torch.Tensor, np.ndarray, list] = None,
+        save_debug_image_path: Optional[Union[str, list]] = None,
     ) -> dict:
         """
-        创建pytorch3d中的相机，渲染三角网格，并获取渲染图中每个像素对应的
+        使用nvdiffrast渲染三角网格，并获取渲染图中每个像素对应的
         三角网格表面的顶点插值信息
 
         Args:
-            mesh: Meshes对象，要渲染的三角网格
+            mesh: trimesh.Trimesh对象，要渲染的三角网格
             width: 图像宽度
             height: 图像高度
             fx: 相机焦距x
             fy: 相机焦距y
             cx: 主点x坐标
             cy: 主点y坐标
-            pos: 相机在世界坐标系中的位置 [x, y, z]
-            rot: 相机旋转矩阵（3x3），从相机坐标系到世界坐标系的旋转
+            pos: 相机在世界坐标系中的位置，支持单个[N, 3]或批量[N, 3]的tensor/array/list
+            rot: 相机旋转矩阵，支持单个[3, 3]或批量[N, 3, 3]的tensor/array/list，从相机坐标系到世界坐标系的旋转
+            save_debug_image_path: 可选，如果提供路径字符串，将保存所有视角的渲染图像（按idx命名）
+                                  如果提供路径列表，将按列表顺序保存每张图片
 
         Returns:
             dict包含:
-                - pix_to_face: [1, H, W, 1] 每个像素对应的面索引，-1表示背景
-                - bary_coords: [1, H, W, 1, 3] 每个像素对应的重心坐标
-                - fragments: 完整的fragments对象
+                - images: [N, H, W, 3] 渲染的图像 (RGB)
+                - rasterize_output: [N, H, W, 4] rasterize主输出 (u, v, z/w, triangle_id)
+                - bary_derivs: [N, H, W, 4] 重心坐标的图像空间导数 (du/dX, du/dY, dv/dX, dv/dY)
         """
-        # 转换pos和rot为torch tensor
-        if isinstance(pos, (list, np.ndarray)):
+        # 1. 处理输入参数，转换为tensor
+        if pos is None:
+            # 默认相机位置：在mesh中心前方
+            bbox_center = (np.min(mesh.vertices, axis=0) + np.max(mesh.vertices, axis=0)) / 2
+            bbox_size = np.linalg.norm(np.max(mesh.vertices, axis=0) - np.min(mesh.vertices, axis=0))
+            pos = [[bbox_center[0], bbox_center[1], bbox_center[2] - bbox_size * 2.0]]
+        
+        # 转换pos为tensor [N, 3]
+        if isinstance(pos, list):
             pos = torch.tensor(pos, dtype=torch.float32, device=self.device)
+        elif isinstance(pos, np.ndarray):
+            pos = torch.from_numpy(pos).float().to(self.device)
+        elif isinstance(pos, torch.Tensor):
+            pos = pos.float().to(self.device)
+        
+        # 确保pos是2D张量 [N, 3]
+        if pos.dim() == 1:
+            pos = pos.unsqueeze(0)
+        
+        N = pos.shape[0]  # 相机数量
+        
+        # 计算mesh中心（用于默认相机朝向）
+        bbox_center = (np.min(mesh.vertices, axis=0) + np.max(mesh.vertices, axis=0)) / 2
+        bbox_center_tensor = torch.from_numpy(bbox_center).float().to(self.device)
+        
+        # 转换rot为tensor [N, 3, 3]
+        if rot is None:
+            # 默认旋转：让相机朝向mesh中心
+            rot = []
+            for i in range(N):
+                # 计算从相机到mesh中心的方向（相机朝向）
+                forward = bbox_center_tensor - pos[i]  # [3]
+                forward = forward / (torch.norm(forward) + 1e-8)  # 归一化
+                
+                # 在OpenGL坐标系中，forward应该是-z方向
+                # 选择up向量为世界坐标系的y轴
+                world_up = torch.tensor([0.0, 1.0, 0.0], dtype=torch.float32, device=self.device)
+                
+                # 计算right = forward × up
+                right = torch.cross(forward, world_up)
+                right = right / (torch.norm(right) + 1e-8)
+                
+                # 重新计算up = right × forward
+                up = torch.cross(right, forward)
+                up = up / (torch.norm(up) + 1e-8)
+                
+                # 构建旋转矩阵（从相机到世界）
+                # 在OpenGL坐标系中：x=right, y=up, z=-forward
+                R_cam_to_world = torch.stack([right, up, -forward], dim=1)  # [3, 3]
+                rot.append(R_cam_to_world)
+            
+            rot = torch.stack(rot, dim=0)  # [N, 3, 3]
         else:
-            pos = pos.to(self.device)
-
-        if isinstance(rot, np.ndarray):
-            rot = torch.tensor(rot, dtype=torch.float32, device=self.device)
-        elif isinstance(rot, list):
-            rot = torch.tensor(rot, dtype=torch.float32, device=self.device)
+            if isinstance(rot, list):
+                rot = torch.tensor(rot, dtype=torch.float32, device=self.device)
+            elif isinstance(rot, np.ndarray):
+                rot = torch.from_numpy(rot).float().to(self.device)
+            elif isinstance(rot, torch.Tensor):
+                rot = rot.float().to(self.device)
+            
+            # 确保rot是3D张量 [N, 3, 3]
+            if rot.dim() == 2:
+                rot = rot.unsqueeze(0).repeat(N, 1, 1)
+        
+        # 2. 创建nvdiffrast上下文
+        glctx = dr.RasterizeCudaContext(device=self.device)
+        
+        # 3. 准备mesh数据
+        vertices = torch.from_numpy(mesh.vertices).float().to(self.device)  # [V, 3]
+        faces = torch.from_numpy(mesh.faces).int().to(self.device)  # [F, 3]
+        
+        # 获取顶点颜色
+        if hasattr(mesh.visual, 'vertex_colors') and mesh.visual.vertex_colors is not None:
+            vertex_colors = torch.from_numpy(mesh.visual.vertex_colors[:, :3]).float().to(self.device) / 255.0  # [V, 3]
         else:
-            rot = rot.to(self.device)
+            vertex_colors = torch.ones_like(vertices) * 0.7  # 默认灰色
 
-        # 确保rot是3x3矩阵
-        rot = rot.reshape(1, 3, 3)  # [1, 3, 3]
-        pos = pos.reshape(1, 3)  # [1, 3]
+        # 4. 构建投影矩阵（参考nvdiffrast官方示例）
+        # 根据mesh大小动态设置near和far
+        bbox_size = np.linalg.norm(np.max(mesh.vertices, axis=0) - np.min(mesh.vertices, axis=0))
+        near = bbox_size * 0.1
+        far = bbox_size * 10.0
 
-        R = rot.transpose(-2, -1)  # [1, 3, 3]
-
-        T = torch.bmm(R, pos.unsqueeze(-1)).squeeze(-1)  # [1, 3]
-
-        # 创建相机
-        cameras = PerspectiveCameras(
-            focal_length=((fx, fy),),
-            principal_point=((cx, cy),),
-            image_size=((height, width),),
-            R=rot,
-            T=T,
-            device=self.device
-        )
-
-        # 设置光栅化参数
-        raster_settings = RasterizationSettings(
-            image_size=(height, width),
-            blur_radius=0.0,
-            faces_per_pixel=1
-        )
-
-        # 创建光栅化器
-        rasterizer = MeshRasterizer(
-            cameras=cameras,
-            raster_settings=raster_settings
-        )
-
-        # 渲染网格，获取fragments
-        fragments = rasterizer(mesh)
-
-        # 提取每个像素对应的面索引和重心坐标
-        pix_to_face = fragments.pix_to_face  # [1, H, W, 1]
-        bary_coords = fragments.bary_coords  # [1, H, W, 1, 3]
-
-        return {
-            'pix_to_face': pix_to_face,
-            'bary_coords': bary_coords,
-            'fragments': fragments
+        # 构建标准OpenGL透视投影矩阵
+        # 参考: https://github.com/NVlabs/nvdiffrast/blob/main/samples/torch/util.py
+        def perspective_projection(fovy_radians, aspect, n, f):
+            """构建OpenGL透视投影矩阵"""
+            y = np.tan(fovy_radians / 2)
+            return np.array([
+                [1/(y*aspect),    0,            0,              0],
+                [           0, 1/-y,            0,              0],
+                [           0,    0, -(f+n)/(f-n), -(2*f*n)/(f-n)],
+                [           0,    0,           -1,              0]
+            ], dtype=np.float32)
+        
+        # 从fx, fy计算fov
+        fovy = 2 * np.arctan(height / (2 * fy))
+        aspect = width / height
+        proj_mtx = torch.from_numpy(perspective_projection(fovy, aspect, near, far)).to(self.device)
+        
+        # 5. 批量渲染
+        all_images = []
+        all_rast_out = []
+        all_bary_derivs = []
+        
+        for i in range(N):
+            # 构建视图矩阵 (world to camera)
+            # 参考nvdiffrast官方示例的transform_pos函数
+            R = rot[i].T  # [3, 3] 从世界到相机的旋转
+            t = pos[i]    # [3] 相机在世界坐标系中的位置
+            
+            # 构建4x4视图矩阵
+            view_mtx = torch.eye(4, dtype=torch.float32, device=self.device)
+            view_mtx[:3, :3] = R
+            view_mtx[:3, 3] = -R @ t  # 平移部分
+            
+            # 组合MVP矩阵 (projection * view)
+            mvp = proj_mtx @ view_mtx  # [4, 4]
+            
+            # 顶点变换到裁剪空间 (参考官方示例的transform_pos)
+            # (x,y,z) -> (x,y,z,1)
+            vertices_homo = torch.cat([
+                vertices,
+                torch.ones((vertices.shape[0], 1), dtype=torch.float32, device=self.device)
+            ], dim=1)  # [V, 4]
+            
+            # 应用MVP变换: posw @ mvp.t()
+            # 注意：官方示例使用 matmul(posw, mvp.t())
+            vertices_clip = torch.matmul(vertices_homo, mvp.t())  # [V, 4]
+            
+            # 添加batch维度 [1, V, 4] (参考官方示例返回 [None, ...])
+            vertices_clip_batch = vertices_clip.unsqueeze(0).contiguous()
+            
+            # 光栅化 (参考官方示例的render函数)
+            rast_out, rast_out_db = dr.rasterize(
+                glctx,
+                vertices_clip_batch,  # [1, V, 4]
+                faces,
+                resolution=[height, width]
+            )
+            
+            # rast_out: [1, H, W, 4] - (u, v, z/w, triangle_id)
+            # rast_out_db: [1, H, W, 4] - 重心坐标导数
+            
+            # 插值顶点颜色 (参考官方示例)
+            colors_interp, _ = dr.interpolate(
+                vertex_colors.unsqueeze(0),  # [1, V, 3]
+                rast_out,
+                faces
+            )
+            
+            # 抗锯齿 (参考官方示例的antialias)
+            colors_interp = dr.antialias(
+                colors_interp, 
+                rast_out, 
+                vertices_clip_batch, 
+                faces
+            )
+            
+            # 转换为RGB图像 [1, H, W, 3]
+            image = colors_interp[0]  # [H, W, 3]
+            
+            # 上下翻转图像 (OpenGL坐标系 -> 图像坐标系)
+            image_flipped = torch.flip(image, dims=[0])
+            
+            # 保存调试图像
+            if save_debug_image_path is not None:
+                if isinstance(save_debug_image_path, list):
+                    if i < len(save_debug_image_path):
+                        save_path = save_debug_image_path[i]
+                    else:
+                        save_path = None
+                else:
+                    # 如果是字符串，添加索引
+                    base_path = os.path.splitext(save_debug_image_path)[0]
+                    ext = os.path.splitext(save_debug_image_path)[1]
+                    save_path = f"{base_path}_{i}{ext}"
+                
+                if save_path is not None:
+                    save_dir = os.path.dirname(save_path)
+                    if save_dir:  # 只有当目录路径非空时才创建
+                        os.makedirs(save_dir, exist_ok=True)
+                    # 使用已翻转的图像
+                    img_np = image_flipped.detach().cpu().numpy()
+                    # 限制值在0-255范围内并转换为uint8
+                    img_np = np.clip(np.rint(img_np * 255), 0, 255).astype(np.uint8)
+                    cv2.imwrite(save_path, cv2.cvtColor(img_np, cv2.COLOR_RGB2BGR))
+                    print(f"Saved render image {i} to: {save_path}")
+            
+            all_images.append(image_flipped)
+            all_rast_out.append(rast_out[0])  # [H, W, 4]
+            all_bary_derivs.append(rast_out_db[0] if rast_out_db is not None else torch.zeros_like(rast_out[0]))
+        
+        # 6. 组合结果
+        result = {
+            'images': torch.stack(all_images, dim=0),  # [N, H, W, 3]
+            'rasterize_output': torch.stack(all_rast_out, dim=0),  # [N, H, W, 4]
+            'bary_derivs': torch.stack(all_bary_derivs, dim=0),  # [N, H, W, 4]
         }
+        
+        return result
+
 
     def matchMeshFileToImageFile(
         self,
