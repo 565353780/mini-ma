@@ -18,15 +18,25 @@ def demo():
         model_file_path=model_file_path,
     )
 
-    match_result = mesh_matcher.matchMeshFileToImageFile(
+    render_dict, match_result = mesh_matcher.matchMeshFileToImageFile(
         image_file_path,
         mesh_file_path,
         save_match_result_folder_path,
     )
 
-    if match_result is None:
-        print('detectImageFilePair failed!')
+    if render_dict is None:
+        print('render failed!')
         return False
+
+    if match_result is None:
+        print('match failed!')
+        return False
+
+    for key, value in render_dict.items():
+        try:
+            print(key, value.shape)
+        except:
+            pass
 
     for key, value in match_result.items():
         try:

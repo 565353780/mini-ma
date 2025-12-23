@@ -14,16 +14,6 @@ from mini_ma.Method.plotting import make_matching_figure
 
 
 class Detector(object):
-    """
-    图像匹配检测器
-    
-    支持多种模型：
-    - xoftr: XoFTR 模型
-    - loftr: LoFTR 模型
-    - roma: RoMa 模型
-    - sp_lg: SuperPoint + LightGlue 模型
-    """
-    
     def __init__(
         self,
         method: str = "sp_lg",

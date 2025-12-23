@@ -4,7 +4,7 @@ import torch
 import trimesh
 import numpy as np
 import nvdiffrast.torch as dr
-from typing import Optional, Union
+from typing import Optional, Union, Tuple
 
 from camera_control.Method.data import toTensor
 from camera_control.Module.camera import Camera
@@ -197,37 +197,33 @@ class MeshMatcher(object):
         light_dir_cam = light_dir_cam / (torch.norm(light_dir_cam) + 1e-8)
 
         # 计算Lambert着色
-        diffuse = torch.sum(normals_cam * light_dir_cam, dim=-1, keepdim=True)  # [H, W, 1]
+        diffuse = torch.sum(normals_cam * light_dir_cam, dim=-1, keepdim=False)  # [H, W]
         diffuse = torch.clamp(diffuse, min=0.0, max=1.0)
 
         # 添加环境光
         ambient = 0.3
-        shading = ambient + (1.0 - ambient) * diffuse  # [H, W, 1]
-
-        # 转换为RGB（白模效果）
-        image = shading.repeat(1, 1, 3)  # [H, W, 3]
+        image = ambient + (1.0 - ambient) * diffuse  # [H, W]
 
         # 处理背景
         mask = rast_out[0, :, :, 3] > 0  # [H, W]
         background = torch.ones_like(image)  # 白色背景
-        image = torch.where(mask.unsqueeze(-1), image, background)
+        image = torch.where(mask, image, background)
+        render_image = image.detach().cpu().numpy()
+        render_image_np = np.clip(np.rint(render_image * 255), 0, 255).astype(np.uint8)
 
         result = {
-            'image': image,  # [H, W, 3]
+            'image': render_image_np,  # [H, W]
             'rasterize_output': rast_out[0],  # [H, W, 4]
             'bary_derivs': rast_out_db[0] if rast_out_db is not None else torch.zeros_like(rast_out[0]),  # [H, W, 4]
         }
 
         return result
 
-    def matchMeshFileToImageFile(
+    def matchMeshToImage(
         self,
-        image_file_path: str,
-        mesh_file_path: str,
-        save_match_result_folder_path: str,
-    ) -> dict:
-        mesh = self.loadMeshFile(mesh_file_path)
-
+        image: np.ndarray,
+        mesh: trimesh.Trimesh,
+    ) -> Tuple[dict, dict]:
         min_bound = np.min(mesh.vertices, axis=0)
         max_bound = np.max(mesh.vertices, axis=0)
         center = (min_bound + max_bound) / 2.0
@@ -248,27 +244,42 @@ class MeshMatcher(object):
             light_direction=[1, 1, 1],
         )
 
-        render_image_file_path = save_match_result_folder_path + 'debug.png'
-
-        image = render_dict['image']
-        img_np = image.detach().cpu().numpy()
-        img_np = np.clip(np.rint(img_np * 255), 0, 255).astype(np.uint8)
-
-        createFileFolder(render_image_file_path)
-        cv2.imwrite(render_image_file_path, cv2.cvtColor(img_np, cv2.COLOR_RGB2BGR))
-
-        match_result = self.detector.detectImageFilePair(image_file_path, render_image_file_path)
+        match_result = self.detector.detect(image, render_dict['image'])
 
         if match_result is None:
-            print('[ERROR][MeshMatcher::matchMeshFileToImageFile]')
-            print('\t detectImageFilePair failed!')
-            return {}
+            print('[ERROR][MeshMatcher::matchMeshToImage]')
+            print('\t matching pairs detect failed!')
+            return render_dict, {}
 
-        for key, value in match_result.items():
-            try:
-                print(key, value.shape)
-            except:
-                print(key, value)
+        return render_dict, match_result
+
+    def matchMeshFileToImageFile(
+        self,
+        image_file_path: str,
+        mesh_file_path: str,
+        save_match_result_folder_path: str,
+    ) -> Tuple[dict, dict]:
+        if not os.path.exists(image_file_path):
+            print('[ERROR][MeshMatcher::matchMeshFileToImageFile]')
+            print('\t image file not exist!')
+            print('\t image_file_path:', image_file_path)
+            return {}, {}
+
+        if not os.path.exists(mesh_file_path):
+            print('[ERROR][MeshMatcher::matchMeshFileToImageFile]')
+            print('\t mesh file not exist!')
+            print('\t mesh_file_path:', mesh_file_path)
+            return {}, {}
+
+        image = loadImage(image_file_path, is_gray=True)
+
+        mesh = self.loadMeshFile(mesh_file_path)
+
+        render_dict, match_result = self.matchMeshToImage(image, mesh)
+
+        render_image_file_path = save_match_result_folder_path + 'debug.png'
+        createFileFolder(render_image_file_path)
+        cv2.imwrite(render_image_file_path, render_dict['image'])
 
         img_vis = self.detector.renderMatchResult(
             match_result,
@@ -278,4 +289,4 @@ class MeshMatcher(object):
         save_path=save_match_result_folder_path + "render_matches_all.jpg"
         createFileFolder(save_path)
         cv2.imwrite(save_path, img_vis)
-        return {}
+        return render_dict, match_result
