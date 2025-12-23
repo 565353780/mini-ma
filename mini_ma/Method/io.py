@@ -18,3 +18,7 @@ def loadImage(
         return None
 
     return image_data
+
+def getImageSize(image_file_path: str) -> list:
+    image = cv2.imread(image_file_path)
+    return image.shape[:2]
