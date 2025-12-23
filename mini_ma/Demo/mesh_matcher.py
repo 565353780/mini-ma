@@ -2,10 +2,7 @@ import sys
 sys.path.append('../camera-control')
 
 import os
-import cv2
-import numpy as np
 
-from mini_ma.Method.path import createFileFolder
 from mini_ma.Module.mesh_matcher import MeshMatcher
 
 
@@ -21,35 +18,11 @@ def demo():
         model_file_path=model_file_path,
     )
 
-    mesh = mesh_matcher.loadMeshFile(mesh_file_path)
-
-    # 打印边界框信息
-    min_bound = np.min(mesh.vertices, axis=0)
-    max_bound = np.max(mesh.vertices, axis=0)
-    center = (min_bound + max_bound) / 2.0
-
-    camera_info = mesh_matcher.queryCamera(
-        mesh,
-        width=2560,
-        height=1440,
-        cx=1280,
-        cy=720,
-        pos=[
-            center + [0, 0, -1.0],
-            center + [0, 0, 1.0],
-        ],
-        save_debug_image_path=save_match_result_folder_path + 'debug.png'
+    match_result = mesh_matcher.matchMeshFileToImageFile(
+        image_file_path,
+        mesh_file_path,
+        save_match_result_folder_path,
     )
-
-    print(mesh)
-    for key, value in camera_info.items():
-        try:
-            print(key, value.shape)
-        except:
-            pass
-    exit()
-
-    match_result = mesh_matcher.matchMeshFileToImageFile(image_file_path, mesh_file_path)
 
     if match_result is None:
         print('detectImageFilePair failed!')
@@ -60,13 +33,4 @@ def demo():
             print(key, value.shape)
         except:
             print(key, value)
-
-    img_vis = mesh_matcher.renderMatchResult(
-        match_result,
-        image1_file_path,
-        image2_file_path,
-    )
-    save_path=save_match_result_folder_path + "matches_all.jpg"
-    createFileFolder(save_path)
-    cv2.imwrite(save_path, img_vis)
     return True

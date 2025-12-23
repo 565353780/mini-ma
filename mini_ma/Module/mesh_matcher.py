@@ -1,5 +1,6 @@
 import os
 import cv2
+from mini_ma.Method.path import createFileFolder
 import torch
 import trimesh
 import numpy as np
@@ -19,15 +20,13 @@ class MeshMatcher(object):
         method: str = "sp_lg",
         model_file_path: Optional[str] = None,
     ) -> None:
-        '''
         self.detector = Detector(
             method=method,
             model_file_path=model_file_path,
         )
         self.device = self.detector.device
-        '''
 
-        self.device = torch.device('cuda:7')
+        # self.device = torch.device('cuda:7')
         return
 
     def loadMeshFile(
@@ -40,7 +39,7 @@ class MeshMatcher(object):
 
         Args:
             mesh_file_path: 网格文件路径（trimesh支持的所有格式）
-            color: 顶点颜色，默认[0.7, 0.7, 1]（浅蓝色）
+            color: 顶点颜色，默认[0.7, 0.7, 0.7]（灰色）
 
         Returns:
             trimesh.Trimesh对象
@@ -81,6 +80,8 @@ class MeshMatcher(object):
         pos: Union[torch.Tensor, np.ndarray, list] = None,
         rot: Union[torch.Tensor, np.ndarray, list] = None,
         save_debug_image_path: Optional[Union[str, list]] = None,
+        use_normal_shading: bool = False,
+        light_direction: Union[torch.Tensor, np.ndarray, list] = None,
     ) -> dict:
         """
         使用nvdiffrast渲染三角网格，并获取渲染图中每个像素对应的
@@ -98,6 +99,8 @@ class MeshMatcher(object):
             rot: 相机旋转矩阵，支持单个[3, 3]或批量[N, 3, 3]的tensor/array/list，从相机坐标系到世界坐标系的旋转
             save_debug_image_path: 可选，如果提供路径字符串，将保存所有视角的渲染图像（按idx命名）
                                   如果提供路径列表，将按列表顺序保存每张图片
+            use_normal_shading: 是否使用法向着色（白模效果），默认False使用顶点颜色
+            light_direction: 光照方向（世界坐标系），默认为[0, 0, -1]（从相机方向照射）
 
         Returns:
             dict包含:
@@ -176,11 +179,35 @@ class MeshMatcher(object):
         vertices = torch.from_numpy(mesh.vertices).float().to(self.device)  # [V, 3]
         faces = torch.from_numpy(mesh.faces).int().to(self.device)  # [F, 3]
         
-        # 获取顶点颜色
-        if hasattr(mesh.visual, 'vertex_colors') and mesh.visual.vertex_colors is not None:
-            vertex_colors = torch.from_numpy(mesh.visual.vertex_colors[:, :3]).float().to(self.device) / 255.0  # [V, 3]
+        # 计算或获取顶点法向量
+        if use_normal_shading:
+            # 确保mesh有法向量，如果没有则计算
+            if not hasattr(mesh, 'vertex_normals') or mesh.vertex_normals is None:
+                mesh.compute_vertex_normals()
+            
+            vertex_normals = torch.from_numpy(mesh.vertex_normals).float().to(self.device)  # [V, 3]
+            
+            # 设置光照方向（世界坐标系）
+            if light_direction is None:
+                # 默认使用相机方向的平均值作为光照方向
+                # 这样可以产生类似前向照明的效果
+                light_direction = torch.tensor([0.0, 0.0, 1.0], dtype=torch.float32, device=self.device)
+            else:
+                if isinstance(light_direction, list):
+                    light_direction = torch.tensor(light_direction, dtype=torch.float32, device=self.device)
+                elif isinstance(light_direction, np.ndarray):
+                    light_direction = torch.from_numpy(light_direction).float().to(self.device)
+                elif isinstance(light_direction, torch.Tensor):
+                    light_direction = light_direction.float().to(self.device)
+            
+            # 归一化光照方向
+            light_direction = light_direction / (torch.norm(light_direction) + 1e-8)
         else:
-            vertex_colors = torch.ones_like(vertices) * 0.7  # 默认灰色
+            # 获取顶点颜色
+            if hasattr(mesh.visual, 'vertex_colors') and mesh.visual.vertex_colors is not None:
+                vertex_colors = torch.from_numpy(mesh.visual.vertex_colors[:, :3]).float().to(self.device) / 255.0  # [V, 3]
+            else:
+                vertex_colors = torch.ones_like(vertices) * 0.7  # 默认灰色
 
         # 4. 构建投影矩阵（参考nvdiffrast官方示例）
         # 根据mesh大小动态设置near和far
@@ -246,15 +273,52 @@ class MeshMatcher(object):
                 resolution=[height, width]
             )
 
-            # 插值顶点颜色
-            colors_interp, _ = dr.interpolate(
-                vertex_colors.unsqueeze(0),  # [1, V, 3]
-                rast_out,
-                faces
-            )
+            if use_normal_shading:
+                # 法向着色：插值顶点法向量
+                normals_interp, _ = dr.interpolate(
+                    vertex_normals.unsqueeze(0),  # [1, V, 3]
+                    rast_out,
+                    faces
+                )
+                
+                # 归一化插值后的法向量
+                normals_interp = normals_interp / (torch.norm(normals_interp, dim=-1, keepdim=True) + 1e-8)
+                
+                # 将法向量从世界坐标系转换到相机坐标系
+                R = rot[i].T  # [3, 3] 世界到相机的旋转
+                normals_cam = torch.matmul(normals_interp[0], R.T)  # [H, W, 3]
+                
+                # 将光照方向也转换到相机坐标系
+                light_dir_cam = torch.matmul(light_direction, R.T)  # [3]
+                light_dir_cam = light_dir_cam / (torch.norm(light_dir_cam) + 1e-8)
+                
+                # 计算Lambert着色：max(0, dot(normal, light))
+                # 点积：[H, W, 3] * [3] -> [H, W]
+                diffuse = torch.sum(normals_cam * light_dir_cam, dim=-1, keepdim=True)  # [H, W, 1]
+                diffuse = torch.clamp(diffuse, min=0.0, max=1.0)
+                
+                # 添加环境光，避免完全黑暗的区域（类似MeshLab的效果）
+                ambient = 0.3
+                shading = ambient + (1.0 - ambient) * diffuse  # [H, W, 1]
+                
+                # 转换为RGB（白模：所有通道相同的灰度值）
+                # 背景设为白色，模型表面根据法向着色
+                image = shading.repeat(1, 1, 3)  # [H, W, 3]
+                
+                # 处理背景（triangle_id < 0 的像素）
+                mask = rast_out[0, :, :, 3] > 0  # [H, W]
+                background = torch.ones_like(image)  # 白色背景
+                image = torch.where(mask.unsqueeze(-1), image, background)
+            else:
+                # 插值顶点颜色
+                colors_interp, _ = dr.interpolate(
+                    vertex_colors.unsqueeze(0),  # [1, V, 3]
+                    rast_out,
+                    faces
+                )
 
-            # 获取RGB图像 [H, W, 3]
-            image = colors_interp[0]
+                # 获取RGB图像 [H, W, 3]
+                image = colors_interp[0]
 
             # 保存调试图像
             if save_debug_image_path is not None:
@@ -291,11 +355,11 @@ class MeshMatcher(object):
 
         return result
 
-
     def matchMeshFileToImageFile(
         self,
         image_file_path: str,
         mesh_file_path: str,
+        save_match_result_folder_path: str,
     ) -> dict:
         if self.detector.method == "roma":
             # RoMa 使用彩色图片
@@ -304,7 +368,52 @@ class MeshMatcher(object):
             # LoFTR, sp_lg, xoftr 使用灰度图片
             is_gray = True
 
-        image_data = loadImage(image_file_path, is_gray)
+        # image_data = loadImage(image_file_path, is_gray)
 
         mesh = self.loadMeshFile(mesh_file_path)
+
+        min_bound = np.min(mesh.vertices, axis=0)
+        max_bound = np.max(mesh.vertices, axis=0)
+        center = (min_bound + max_bound) / 2.0
+
+        render_dict = self.queryCamera(
+            mesh=mesh,
+            width=2560,
+            height=1440,
+            cx=1280,
+            cy=720,
+            pos=[
+                center + [0, 0, 1],
+            ],
+            save_debug_image_path=save_match_result_folder_path + 'debug.png',
+            use_normal_shading=True,
+            light_direction=[1, 1, 1],
+        )
+
+        render
+
+        render_image_file_path = save_match_result_folder_path + 'debug_0.png'
+        # render_image_data = loadImage(render_image_file_path, is_gray)
+
+        match_result = self.detector.detectImageFilePair(image_file_path, render_image_file_path)
+
+        if match_result is None:
+            print('[ERROR][MeshMatcher::matchMeshFileToImageFile]')
+            print('\t detectImageFilePair failed!')
+            return {}
+
+        for key, value in match_result.items():
+            try:
+                print(key, value.shape)
+            except:
+                print(key, value)
+
+        img_vis = self.detector.renderMatchResult(
+            match_result,
+            image_file_path,
+            render_image_file_path,
+        )
+        save_path=save_match_result_folder_path + "render_matches_all.jpg"
+        createFileFolder(save_path)
+        cv2.imwrite(save_path, img_vis)
         return {}
