@@ -3,6 +3,7 @@ sys.path.append('../camera-control')
 
 import os
 import cv2
+import numpy as np
 
 from mini_ma.Method.path import createFileFolder
 from mini_ma.Module.mesh_matcher import MeshMatcher
@@ -22,14 +23,20 @@ def demo():
 
     mesh = mesh_matcher.loadMeshFile(mesh_file_path)
 
+    # 打印边界框信息
+    min_bound = np.min(mesh.vertices, axis=0)
+    max_bound = np.max(mesh.vertices, axis=0)
+    center = (min_bound + max_bound) / 2.0
+
     camera_info = mesh_matcher.queryCamera(
         mesh,
+        width=2560,
+        height=1440,
+        cx=1280,
+        cy=720,
         pos=[
-            [0, 0, -3],
-            [0, 0, -2],
-            [0, 0, 0],
-            [0, 0, 2],
-            [0, 0, 3],
+            center + [0, 0, -1.0],
+            center + [0, 0, 1.0],
         ],
         save_debug_image_path=save_match_result_folder_path + 'debug.png'
     )

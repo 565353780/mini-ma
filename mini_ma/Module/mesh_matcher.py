@@ -61,13 +61,6 @@ class MeshMatcher(object):
         if not isinstance(mesh_trimesh, trimesh.Trimesh):
             raise ValueError(f"无法从文件 {mesh_file_path} 中提取三角网格数据")
 
-        # 打印边界框信息
-        min_bound = np.min(mesh_trimesh.vertices, axis=0)
-        max_bound = np.max(mesh_trimesh.vertices, axis=0)
-        print('loaded mesh bbox:')
-        print(min_bound)
-        print(max_bound)
-
         # 如果mesh没有顶点颜色，添加默认颜色
         if not hasattr(mesh_trimesh.visual, 'vertex_colors') or mesh_trimesh.visual.vertex_colors is None:
             # 创建顶点颜色数组
@@ -245,38 +238,24 @@ class MeshMatcher(object):
             # 添加batch维度 [1, V, 4] (参考官方示例返回 [None, ...])
             vertices_clip_batch = vertices_clip.unsqueeze(0).contiguous()
             
-            # 光栅化 (参考官方示例的render函数)
+            # 光栅化
             rast_out, rast_out_db = dr.rasterize(
                 glctx,
                 vertices_clip_batch,  # [1, V, 4]
                 faces,
                 resolution=[height, width]
             )
-            
-            # rast_out: [1, H, W, 4] - (u, v, z/w, triangle_id)
-            # rast_out_db: [1, H, W, 4] - 重心坐标导数
-            
-            # 插值顶点颜色 (参考官方示例)
+
+            # 插值顶点颜色
             colors_interp, _ = dr.interpolate(
                 vertex_colors.unsqueeze(0),  # [1, V, 3]
                 rast_out,
                 faces
             )
-            
-            # 抗锯齿 (参考官方示例的antialias)
-            colors_interp = dr.antialias(
-                colors_interp, 
-                rast_out, 
-                vertices_clip_batch, 
-                faces
-            )
-            
-            # 转换为RGB图像 [1, H, W, 3]
-            image = colors_interp[0]  # [H, W, 3]
-            
-            # 上下翻转图像 (OpenGL坐标系 -> 图像坐标系)
-            image_flipped = torch.flip(image, dims=[0])
-            
+
+            # 获取RGB图像 [H, W, 3]
+            image = colors_interp[0]
+
             # 保存调试图像
             if save_debug_image_path is not None:
                 if isinstance(save_debug_image_path, list):
@@ -289,29 +268,27 @@ class MeshMatcher(object):
                     base_path = os.path.splitext(save_debug_image_path)[0]
                     ext = os.path.splitext(save_debug_image_path)[1]
                     save_path = f"{base_path}_{i}{ext}"
-                
+
                 if save_path is not None:
                     save_dir = os.path.dirname(save_path)
-                    if save_dir:  # 只有当目录路径非空时才创建
+                    if save_dir:
                         os.makedirs(save_dir, exist_ok=True)
-                    # 使用已翻转的图像
-                    img_np = image_flipped.detach().cpu().numpy()
-                    # 限制值在0-255范围内并转换为uint8
+                    img_np = image.detach().cpu().numpy()
                     img_np = np.clip(np.rint(img_np * 255), 0, 255).astype(np.uint8)
                     cv2.imwrite(save_path, cv2.cvtColor(img_np, cv2.COLOR_RGB2BGR))
                     print(f"Saved render image {i} to: {save_path}")
-            
-            all_images.append(image_flipped)
-            all_rast_out.append(rast_out[0])  # [H, W, 4]
+
+            all_images.append(image)
+            all_rast_out.append(rast_out[0])
             all_bary_derivs.append(rast_out_db[0] if rast_out_db is not None else torch.zeros_like(rast_out[0]))
-        
+
         # 6. 组合结果
         result = {
             'images': torch.stack(all_images, dim=0),  # [N, H, W, 3]
             'rasterize_output': torch.stack(all_rast_out, dim=0),  # [N, H, W, 4]
             'bary_derivs': torch.stack(all_bary_derivs, dim=0),  # [N, H, W, 4]
         }
-        
+
         return result
 
 
