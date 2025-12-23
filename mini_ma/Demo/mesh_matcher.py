@@ -21,7 +21,13 @@ def demo():
     )
 
     mesh = mesh_matcher.loadMeshFile(mesh_file_path)
+
+    camera_info = mesh_matcher.queryCamera(
+        mesh,
+        pos=[-2, 0, 0],
+    )
     print(mesh)
+    print(camera_info)
     exit()
 
     match_result = mesh_matcher.matchMeshFileToImageFile(image_file_path, mesh_file_path)
