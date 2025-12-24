@@ -9,6 +9,7 @@ from camera_control.Module.camera import Camera
 from camera_control.Module.nvdiffrast_renderer import NVDiffRastRenderer
 
 from mini_ma.Method.io import loadImage
+from mini_ma.Method.data import toTensor
 from mini_ma.Method.path import createFileFolder
 from mini_ma.Module.detector import Detector
 
@@ -19,9 +20,11 @@ class MeshMatcher(object):
         mesh_file_path: str,
         method: str = "sp_lg",
         model_file_path: Optional[str] = None,
-        device: str = 'cuda:0',
         color: list=[178, 178, 178],
+        device: str = 'cuda:0',
     ) -> None:
+        self.device = device
+
         self.detector = Detector(
             method=method,
             model_file_path=model_file_path,
@@ -29,7 +32,6 @@ class MeshMatcher(object):
 
         self.nvdiffrast_renderer = NVDiffRastRenderer(
             mesh_file_path,
-            device,
             color,
         )
         return
@@ -49,13 +51,12 @@ class MeshMatcher(object):
 
         if camera is None:
             camera = Camera(
-                width=2560,
-                height=1440,
-                cx=1280,
-                cy=720,
+                width=image.shape[1],
+                height=image.shape[0],
                 pos=center + [0, 0, 1],
                 look_at=center,
                 up=[0, 1, 0],
+                device=self.device,
             )
 
         render_dict = self.nvdiffrast_renderer.renderImage(
@@ -112,7 +113,7 @@ class MeshMatcher(object):
         triangle_vertices = self.mesh.vertices[self.mesh.faces[matched_triangle_idxs]]
         matched_triangle_centers = triangle_vertices.mean(axis=1)
 
-        image_uv = torch.from_numpy(match_result['mkpts0'] / [image.shape[1], image.shape[0]]) - 0.5
+        image_uv = toTensor(match_result['mkpts0'] / (image.shape[1], image.shape[0]), device=init_camera.device)
         matched_uv = image_uv[on_mesh_idxs]
 
         estimated_camera = Camera.fromUVPoints(
@@ -120,6 +121,7 @@ class MeshMatcher(object):
             matched_uv,
             width=init_camera.width,
             height=init_camera.height,
+            device=init_camera.device,
         )
 
         render_dict, match_result, _ = self.matchMeshToImage(image, estimated_camera)
