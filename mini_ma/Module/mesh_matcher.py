@@ -43,22 +43,8 @@ class MeshMatcher(object):
     def matchMeshToImage(
         self,
         image: np.ndarray,
-        camera: Optional[Camera]=None,
-    ) -> Tuple[dict, dict, Camera]:
-        min_bound = np.min(self.mesh.vertices, axis=0)
-        max_bound = np.max(self.mesh.vertices, axis=0)
-        center = (min_bound + max_bound) / 2.0
-
-        if camera is None:
-            camera = Camera(
-                width=image.shape[1],
-                height=image.shape[0],
-                pos=center + [0, 0, 1],
-                look_at=center,
-                up=[0, 1, 0],
-                device=self.device,
-            )
-
+        camera: Camera,
+    ) -> Tuple[dict, dict]:
         render_dict = self.nvdiffrast_renderer.renderImage(
             camera,
             light_direction=[1, 1, 1],
@@ -69,9 +55,9 @@ class MeshMatcher(object):
         if match_result is None:
             print('[ERROR][MeshMatcher::matchMeshToImage]')
             print('\t matching pairs detect failed!')
-            return render_dict, {}, camera
+            return render_dict, {}
 
-        return render_dict, match_result, camera
+        return render_dict, match_result
 
     def matchMeshToImageFile(
         self,
@@ -84,9 +70,23 @@ class MeshMatcher(object):
             print('\t image_file_path:', image_file_path)
             return {}, {}
 
+        min_bound = np.min(self.mesh.vertices, axis=0)
+        max_bound = np.max(self.mesh.vertices, axis=0)
+        center = (min_bound + max_bound) / 2.0
+
+        # HxWx3
         image = loadImage(image_file_path, is_gray=True)
 
-        render_dict, match_result, init_camera = self.matchMeshToImage(image)
+        init_camera = Camera(
+            width=image.shape[1],
+            height=image.shape[0],
+            pos=center + [0, 0, 1],
+            look_at=center,
+            up=[0, 1, 0],
+            device=self.device,
+        )
+
+        render_dict, match_result = self.matchMeshToImage(image, init_camera)
 
         render_image_file_path = save_match_result_folder_path + 'debug.png'
         createFileFolder(render_image_file_path)
@@ -101,20 +101,57 @@ class MeshMatcher(object):
         createFileFolder(save_path)
         cv2.imwrite(save_path, img_vis)
 
-        render_image_pts = torch.from_numpy(match_result['mkpts1']).to(torch.int32)
+        # [W, H]
+        render_image_pts = torch.from_numpy(np.round(match_result['mkpts1'])).to(torch.int32)
 
+        # HxWx4, u right, v down
         rasterize_output = render_dict['rasterize_output'].detach().cpu()
 
         matched_mesh_data = rasterize_output[render_image_pts[:, 1], render_image_pts[:, 0]]
-
-        on_mesh_idxs = (matched_mesh_data != 0).any(dim=-1).nonzero(as_tuple=False).flatten()
+        on_mesh_idxs = (matched_mesh_data[:, 3] > 0).nonzero(as_tuple=False).flatten()
 
         matched_triangle_idxs = matched_mesh_data[on_mesh_idxs, 3].to(torch.int32)
         triangle_vertices = self.mesh.vertices[self.mesh.faces[matched_triangle_idxs]]
         matched_triangle_centers = triangle_vertices.mean(axis=1)
 
+        '''
+        mesh_uv = init_camera.project_points_to_uv(matched_triangle_centers)
+        mesh_uv[:, 1] = 1.0 - mesh_uv[:, 1]
+        mesh_pixel = mesh_uv * torch.tensor([image.shape[1], image.shape[0]], dtype=torch.int32, device=init_camera.device)
+        mesh_pixel = mesh_pixel.to(torch.int32)
+
+        img_points_vis = render_dict['image'].copy()
+        if len(img_points_vis.shape) == 2:  # grayscale, expand to 3 channels
+            img_points_vis = cv2.cvtColor(img_points_vis, cv2.COLOR_GRAY2BGR)
+
+        for pt in mesh_pixel.cpu().numpy():
+            x, y = int(pt[0]), int(pt[1])
+            cv2.circle(img_points_vis, (x, y), radius=3, color=(0, 0, 255), thickness=-1)
+
+        save_vis_points_path = save_match_result_folder_path + 'mesh_and_image_points.png'
+        createFileFolder(save_vis_points_path)
+        cv2.imwrite(save_vis_points_path, img_points_vis)
+
+        # 查询rasterize_output[:, 3] >= 0的所有uv，将其颜色设为白色，保存为图片
+        mask_valid = (rasterize_output[:, :, 3] > 0)
+
+        # 创建副本以防止修改原图
+        green_mask_vis = render_dict['image'].copy()
+        if len(green_mask_vis.shape) == 2:  # 如果是灰度，转换为3通道
+            green_mask_vis = cv2.cvtColor(green_mask_vis, cv2.COLOR_GRAY2BGR)
+        # 将mask区域设为白色
+        green_mask_vis[mask_valid] = [0, 255, 0]
+
+        save_green_mask_path = save_match_result_folder_path + 'green_mask_pixels.png'
+        createFileFolder(save_green_mask_path)
+        cv2.imwrite(save_green_mask_path, green_mask_vis)
+        exit()
+        '''
+
         image_uv = toTensor(match_result['mkpts0'] / (image.shape[1], image.shape[0]), device=init_camera.device)
         matched_uv = image_uv[on_mesh_idxs]
+
+        matched_uv[:, 1] = 1.0 - matched_uv[:, 1]
 
         estimated_camera = Camera.fromUVPoints(
             matched_triangle_centers,
@@ -124,7 +161,10 @@ class MeshMatcher(object):
             device=init_camera.device,
         )
 
-        render_dict, match_result, _ = self.matchMeshToImage(image, estimated_camera)
+        init_camera.outputInfo()
+        estimated_camera.outputInfo()
+
+        render_dict, match_result = self.matchMeshToImage(image, estimated_camera)
 
         render_image_file_path = save_match_result_folder_path + 'debug_fitting.png'
         createFileFolder(render_image_file_path)
