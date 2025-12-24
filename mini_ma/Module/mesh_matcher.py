@@ -148,12 +148,12 @@ class MeshMatcher(object):
         exit()
         '''
 
-        image_uv = toTensor(match_result['mkpts0'] / (image.shape[1], image.shape[0]), device=init_camera.device)
+        image_uv = toTensor(match_result['mkpts0'], init_camera.dtype, init_camera.device) / torch.tensor([image.shape[1], image.shape[0]], dtype=init_camera.dtype, device=init_camera.device)
         matched_uv = image_uv[on_mesh_idxs]
 
         matched_uv[:, 1] = 1.0 - matched_uv[:, 1]
 
-        estimated_camera = Camera.fromUVPoints(
+        estimated_camera = Camera.fromUVPointsV2(
             matched_triangle_centers,
             matched_uv,
             width=init_camera.width,
