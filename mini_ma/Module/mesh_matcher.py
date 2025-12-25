@@ -224,6 +224,11 @@ class MeshMatcher(object):
         else:
             image_vis = image.copy()
 
+        # 计算IoU
+        intersection = np.logical_and(mesh_mask.cpu().numpy(), white_mask)
+        union = np.logical_or(mesh_mask.cpu().numpy(), white_mask)
+        iou = intersection.sum() / (union.sum() + 1e-5)
+
         iou_vis = np.zeros_like(image_vis)
         mesh_mask_np = mesh_mask.cpu().numpy()
         intersection_mask = np.logical_and(mesh_mask_np, white_mask)
@@ -233,6 +238,14 @@ class MeshMatcher(object):
         iou_vis[white_only_mask] = [0,255,0]
         iou_vis[intersection_mask] = [255,0,0]
 
+        # 在iou_vis的左上角写上IoU数值（白色字体）
+        iou_text = f"IoU: {iou:.3f}" if isinstance(iou, float) or isinstance(iou, np.floating) else f"IoU: {float(iou):.3f}"
+        font = cv2.FONT_HERSHEY_SIMPLEX
+        font_scale = 0.8
+        color = (255, 255, 255) # 白色字体
+        thickness = 2
+        org = (10, 30)  # 左上角位置
+        cv2.putText(iou_vis, iou_text, org, font, font_scale, color, thickness, cv2.LINE_AA)
         return iou_vis
 
     def renderMatchResult(
@@ -248,6 +261,7 @@ class MeshMatcher(object):
         )
 
         image = loadImage(image_file_path, is_gray=False)
+
         iou_vis = self.renderIoU(image, render_dict)
 
         # 拼接iou_vis和img_vis（H相同，W可能不同），沿第1维（水平方向）拼接
