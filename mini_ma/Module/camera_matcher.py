@@ -40,25 +40,6 @@ class CameraMatcher(object):
     def mesh(self) -> trimesh.Trimesh:
         return self.nvdiffrast_renderer.mesh
 
-    def matchMeshImagePairs(
-        self,
-        image: np.ndarray,
-        camera: Camera,
-    ) -> Tuple[dict, dict]:
-        render_dict = self.nvdiffrast_renderer.renderImage(
-            camera,
-            light_direction=[1, 1, 1],
-        )
-
-        match_result = self.detector.detect(image, render_dict['image'])
-
-        if match_result is None:
-            print('[ERROR][CameraMatcher::matchMeshImagePairs]')
-            print('\t matching pairs detect failed!')
-            return render_dict, {}
-
-        return render_dict, match_result
-
     def estimateCamera(
         self,
         render_dict: dict,
@@ -73,7 +54,12 @@ class CameraMatcher(object):
 
         height, width = rasterize_output.shape[:2]
 
-        matched_mesh_data = rasterize_output[render_image_pts[:, 1], render_image_pts[:, 0]]
+        # 保证索引不越界：只保留在[0, H)和[0, W)内的点
+        valid_mask = (render_image_pts[:, 0] >= 0) & (render_image_pts[:, 0] < width) & \
+                     (render_image_pts[:, 1] >= 0) & (render_image_pts[:, 1] < height)
+        safe_pts = render_image_pts[valid_mask]
+
+        matched_mesh_data = rasterize_output[safe_pts[:, 1], safe_pts[:, 0]]
         on_mesh_idxs = (matched_mesh_data[:, 3] > 0).nonzero(as_tuple=False).flatten()
 
         matched_triangle_idxs = toNumpy(matched_mesh_data[on_mesh_idxs, 3].to(torch.int32))
@@ -129,7 +115,8 @@ class CameraMatcher(object):
         self,
         image_file_path: str,
         save_match_result_folder_path: Optional[str],
-    ) -> Tuple[dict, dict]:
+        iter_num: int = 1,
+    ) -> Optional[Camera]:
         render = save_match_result_folder_path is not None
 
         if not os.path.exists(image_file_path):
@@ -150,10 +137,23 @@ class CameraMatcher(object):
             device=self.device,
         )
         init_camera.focusOnPoints(self.mesh.vertices)
+        light_direction = [1, 1, 1]
 
-        render_dict, match_result = self.matchMeshImagePairs(image, init_camera)
+        render_dict = self.nvdiffrast_renderer.renderImage(
+            init_camera,
+            light_direction=light_direction,
+        )
 
+        is_match_updated = False
         if render:
+            match_result = self.detector.detect(image, render_dict['image'])
+            is_match_updated = True
+
+            if match_result is None:
+                print('[ERROR][CameraMatcher::matchMeshImagePairs]')
+                print('\t matching pairs detect failed!')
+                return None
+
             concat_vis = self.renderMatchResult(
                 image_file_path,
                 render_dict,
@@ -167,10 +167,17 @@ class CameraMatcher(object):
         best_iou = 0
         best_camera = init_camera.clone()
 
-        for i in range(1, 11):
+        for i in range(1, 1 + iter_num):
+            if not is_match_updated:
+                match_result = self.detector.detect(image, render_dict['image'])
+                is_match_updated = True
+
             estimated_camera = self.estimateCamera(render_dict, match_result)
 
-            render_dict, match_result = self.matchMeshImagePairs(image, estimated_camera)
+            render_dict = self.nvdiffrast_renderer.renderImage(
+                estimated_camera,
+                light_direction=light_direction,
+            )
 
             iou = self.getIoU(image, render_dict)
 
@@ -181,7 +188,16 @@ class CameraMatcher(object):
                 print('\t best_iou:', best_iou)
                 print('\t best_match_idx:', i)
 
+            is_match_updated = False
             if render:
+                match_result = self.detector.detect(image, render_dict['image'])
+                is_match_updated = True
+
+                if match_result is None:
+                    print('[ERROR][CameraMatcher::matchMeshImagePairs]')
+                    print('\t matching pairs detect failed!')
+                    return None
+
                 concat_vis = self.renderMatchResult(
                     image_file_path,
                     render_dict,
