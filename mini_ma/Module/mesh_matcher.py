@@ -138,10 +138,6 @@ class MeshMatcher(object):
             print('\t image_file_path:', image_file_path)
             return {}, {}
 
-        min_bound = np.min(self.mesh.vertices, axis=0)
-        max_bound = np.max(self.mesh.vertices, axis=0)
-        center = (min_bound + max_bound) / 2.0
-
         # HxWx3
         image = loadImage(image_file_path, is_gray=True)
 
