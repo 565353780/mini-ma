@@ -2,12 +2,12 @@ import os
 import torch
 import trimesh
 import numpy as np
-from typing import Optional
+from typing import Tuple, Optional
 
 from camera_control.Module.camera import Camera
 from camera_control.Module.nvdiffrast_renderer import NVDiffRastRenderer
 
-from mini_ma.Method.data import toNumpy, toTensor
+from mini_ma.Method.data import toTensor
 from mini_ma.Module.detector import Detector
 from mini_ma.Module.camera_matcher import CameraMatcher
 
@@ -50,10 +50,98 @@ class MeshDeformer(object):
     def mesh(self) -> trimesh.Trimesh:
         return self.nvdiffrast_renderer.mesh
 
+    def searchDeformPairs(
+        self,
+        camera: Camera,
+        render_dict: dict,
+        match_result: dict,
+    ) -> Tuple[np.ndarray, np.ndarray]:
+        """
+        返回source mesh顶点去重后的索引 unique_vertex_idxs，以及每个source vertex对应的target空间坐标。
+        """
+        matched_uv, matched_triangle_idxs = self.camera_matcher.extractMatchedUVTriangle(render_dict, match_result)
+
+        # 获取所有匹配三角面的顶点索引 (N, 3)
+        matched_face_vertex_idxs = self.mesh.faces[matched_triangle_idxs]  # (N, 3)
+        all_vertex_idxs = matched_face_vertex_idxs.reshape(-1)  # (N*3,)
+
+        # 对顶点索引去重，得到唯一的顶点索引及每个all_vertex_idxs对应的去重后索引
+        unique_vertex_idxs, inverse_indices = np.unique(all_vertex_idxs, return_inverse=True)  # unique_vertex_idxs: (M,), inverse_indices: (N*3,)
+
+        # 取原始source mesh上unique的顶点位置
+        matched_source_vertices_np = self.mesh.vertices[unique_vertex_idxs]  # (M, 3)
+
+        # === 计算每个face center的target点偏移 ===
+        # (1) 取三角形顶点的坐标，计算质心
+        triangle_vertices = self.mesh.vertices[matched_face_vertex_idxs]  # (N, 3, 3)
+        matched_triangle_centers = triangle_vertices.mean(axis=1)  # (N, 3)
+
+        # (2) 质心到相机坐标系
+        matched_triangle_centers_tensor = toTensor(matched_triangle_centers, camera.dtype, camera.device)
+        matched_triangle_centers_homo = torch.cat([
+            matched_triangle_centers_tensor,
+            torch.ones((len(matched_triangle_centers_tensor), 1), dtype=camera.dtype, device=camera.device)
+        ], dim=1)
+        matched_triangle_centers_camera_homo = torch.matmul(matched_triangle_centers_homo, camera.world2camera.T)
+        matched_triangle_centers_camera = matched_triangle_centers_camera_homo[:, :3]
+
+        # (3) -z 作为深度
+        depth = -matched_triangle_centers_camera[:, 2]
+
+        # (4) uv+depth反投影空间点 (N, 3)
+        matched_target_points = camera.projectUV2Points(matched_uv, depth)  # (N, 3)
+
+        # (5) 得到每个三角形的平移
+        translation_vectors = matched_target_points - matched_triangle_centers_tensor  # (N, 3)
+        translation_vectors_expanded = translation_vectors.unsqueeze(1)  # (N, 1, 3)
+
+        triangle_vertices_tensor = toTensor(triangle_vertices, camera.dtype, camera.device)  # (N,3,3)
+        matched_target_vertices_tensor = triangle_vertices_tensor + translation_vectors_expanded  # (N,3,3)
+        all_target_vertices = matched_target_vertices_tensor.cpu().numpy().reshape(-1, 3)  # (N*3, 3)
+
+        # === 重新排序/唯一化target，和unique_vertex_idxs一一对应 ===
+        # 保证同一source vertex的target值一致，优先按第一次出现的target
+        matched_target_vertices_np = np.zeros_like(matched_source_vertices_np)  # (M, 3)
+        for idx, unique_idx in enumerate(unique_vertex_idxs):
+            positions = np.where(all_vertex_idxs == unique_idx)[0]
+            first_pos = positions[0]
+            matched_target_vertices_np[idx] = all_target_vertices[first_pos]
+
+        # --- 这里返回 unique_vertex_idxs, matched_target_vertices_np ---
+        return unique_vertex_idxs, matched_target_vertices_np
+
+    def filterDeformPairs(
+        self,
+        source_vertex_idxs: np.ndarray,
+        target_points: np.ndarray,
+        max_deform_ratio: float = 0.05,
+    ) -> Tuple[np.ndarray, np.ndarray]:
+        source_points = self.mesh.vertices[source_vertex_idxs]
+
+        deform_vectors = target_points - source_points
+        deform_lengths = np.linalg.norm(deform_vectors, axis=1)
+
+        # 计算source pcd的bbox最大边长
+        bbox_min = source_points.min(axis=0)
+        bbox_max = source_points.max(axis=0)
+        bbox_size = bbox_max - bbox_min
+        max_bbox_len = np.max(bbox_size)
+
+        # 超过阈值的过滤掉
+        deform_threshold = max_bbox_len * max_deform_ratio
+        valid_mask = deform_lengths <= deform_threshold
+
+        # 只保留符合要求的点
+        filtered_source_points = source_points[valid_mask]
+        filtered_target_points = target_points[valid_mask]
+
+        return filtered_source_points, filtered_target_points
+
     def matchMeshToImageFile(
         self,
         image_file_path: str,
         save_match_result_folder_path: str,
+        max_deform_ratio: float = 0.05,
     ) -> Optional[trimesh.Trimesh]:
 
         import pickle
@@ -119,86 +207,27 @@ class MeshDeformer(object):
         render_dict = toGPU(render_dict, camera.device)
         match_result = toGPU(match_result, camera.device)
 
-        matched_uv, matched_triangle_idxs = self.camera_matcher.extractMatchedUVTriangle(render_dict, match_result)
-        # 获取所有匹配的三角面片的顶点索引 (N, 3)
-        matched_face_vertex_idxs = self.mesh.faces[matched_triangle_idxs]  # (N, 3)
-        
-        # 展平成一维，收集全部索引
-        all_vertex_idxs = matched_face_vertex_idxs.reshape(-1)
-        
-        # 按index去重，获取唯一的顶点索引
-        unique_vertex_idxs, inverse_indices = np.unique(all_vertex_idxs, return_inverse=True)
-        
-        # 取原始source mesh上的唯一顶点
-        matched_source_vertices_np = self.mesh.vertices[unique_vertex_idxs]
-        
-        # 下面需要将每个三角形的3个顶点，映射到唯一点集的顺序——记录每个(N, 3)的三角面用唯一点的索引
-        triangle_vertices = self.mesh.vertices[matched_face_vertex_idxs]   # (N, 3, 3)
-        matched_triangle_centers = triangle_vertices.mean(axis=1)
+        source_vertex_idxs, target_pts = self.searchDeformPairs(camera, render_dict, match_result)
 
-        # 将三角形中心点转换为tensor并变换到相机坐标系
-        matched_triangle_centers_tensor = toTensor(matched_triangle_centers, camera.dtype, camera.device)
-        
-        # 将三角形中心点从世界坐标系变换到相机坐标系
-        matched_triangle_centers_homo = torch.cat([
-            matched_triangle_centers_tensor,
-            torch.ones((len(matched_triangle_centers_tensor), 1), dtype=camera.dtype, device=camera.device)
-        ], dim=1)
-        matched_triangle_centers_camera_homo = torch.matmul(matched_triangle_centers_homo, camera.world2camera.T)
-        matched_triangle_centers_camera = matched_triangle_centers_camera_homo[:, :3]
-        
-        # 提取深度值：使用 -z 作为深度（因为相机看向 -Z 方向，Z 轴向后）
-        # 在相机坐标系中，可见点的 Z < 0，所以深度 = -Z > 0
-        depth = -matched_triangle_centers_camera[:, 2]
-        
-        # 使用 projectUV2Points 将 UV 和深度反投影回世界坐标系
-        matched_target_points = camera.projectUV2Points(matched_uv, depth)
-        
-        # 计算每个三角形的平移向量
-        # matched_target_points 是目标位置，matched_triangle_centers_tensor 是原始位置
-        translation_vectors = matched_target_points - matched_triangle_centers_tensor
-        
-        # 将平移应用到每个三角形的三个顶点
-        translation_vectors_expanded = translation_vectors.unsqueeze(1)  # (N, 1, 3)
-        
-        triangle_vertices_tensor = toTensor(triangle_vertices, camera.dtype, camera.device)  # (N,3,3)
-        matched_target_vertices_tensor = triangle_vertices_tensor + translation_vectors_expanded  # (N,3,3)
-        
-        # 合成所有目标点，形状 (N*3, 3)
-        all_target_vertices = matched_target_vertices_tensor.cpu().numpy().reshape(-1, 3)
-        
-        # 采用相同顺序、同样的唯一化方案，保证target和source是完全一一对应的
-        # 重新排列，得到target的唯一坐标，与unique_vertex_idxs顺序一致
-        matched_target_vertices_np = np.zeros_like(matched_source_vertices_np)
-        # inverse_indices 的长度就是N*3
-        for idx, unique_idx in enumerate(unique_vertex_idxs):
-            # 找到all_vertex_idxs中等于unique_idx的所有位置（可能有多个，在flatten之后）
-            positions = np.where(all_vertex_idxs == unique_idx)[0]
-            # 取第一个出现的位置即可（因为这类点的target都会被平移到同一位置，只需一致）
-            first_pos = positions[0]
-            matched_target_vertices_np[idx] = all_target_vertices[first_pos]
+        source_pts, target_pts = self.filterDeformPairs(source_vertex_idxs, target_pts, max_deform_ratio)
 
         # 保存为PLY点云文件
         # 确保保存文件夹存在
-        if os.path.isfile(save_match_result_folder_path):
-            save_folder = os.path.dirname(save_match_result_folder_path)
-        else:
-            save_folder = save_match_result_folder_path
-        os.makedirs(save_folder, exist_ok=True)
-        
-        source_pcd_path = os.path.join(save_folder, 'matched_source_vertices.ply')
-        target_pcd_path = os.path.join(save_folder, 'matched_target_vertices.ply')
-        
-        # 使用trimesh创建点云并保存
-        source_pcd = trimesh.PointCloud(vertices=matched_source_vertices_np)
-        target_pcd = trimesh.PointCloud(vertices=matched_target_vertices_np)
-        
-        source_pcd.export(source_pcd_path)
-        target_pcd.export(target_pcd_path)
-        
-        print(f'[INFO][MeshDeformer::matchMeshToImageFile]')
-        print(f'\t 保存源顶点点云: {source_pcd_path}')
-        print(f'\t 保存目标顶点点云: {target_pcd_path}')
-        print(f'\t 点数: {len(matched_source_vertices_np)}')
+        if save_match_result_folder_path is not None:
+            os.makedirs(save_match_result_folder_path, exist_ok=True)
+
+            source_pcd_path = save_match_result_folder_path + 'matched_source_vertices.ply'
+            target_pcd_path = save_match_result_folder_path + 'matched_target_vertices.ply'
+
+            source_pcd = trimesh.PointCloud(vertices=source_pts)
+            target_pcd = trimesh.PointCloud(vertices=target_pts)
+
+            source_pcd.export(source_pcd_path)
+            target_pcd.export(target_pcd_path)
+
+            print(f'[INFO][MeshDeformer::searchDeformPairs]')
+            print(f'\t 保存源顶点点云: {source_pcd_path}')
+            print(f'\t 保存目标顶点点云: {target_pcd_path}')
+            print(f'\t 点数: {source_pts.shape[0]}')
 
         return None
