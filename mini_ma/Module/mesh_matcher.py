@@ -9,7 +9,7 @@ from camera_control.Module.camera import Camera
 from camera_control.Module.nvdiffrast_renderer import NVDiffRastRenderer
 
 from mini_ma.Method.io import loadImage
-from mini_ma.Method.data import toTensor
+from mini_ma.Method.data import toNumpy, toTensor
 from mini_ma.Method.path import createFileFolder
 from mini_ma.Module.detector import Detector
 
@@ -59,11 +59,79 @@ class MeshMatcher(object):
 
         return render_dict, match_result
 
+    def estimateCamera(
+        self,
+        render_dict: dict,
+        match_result: dict,
+    ) -> Camera:
+        # [W, H]
+        render_image_pts = torch.from_numpy(
+            np.round(match_result['mkpts1'])).to(dtype=torch.int32, device=self.device)
+
+        # HxWx4, u right, v down
+        rasterize_output = render_dict['rasterize_output']
+
+        height, width = rasterize_output.shape[:2]
+
+        matched_mesh_data = rasterize_output[render_image_pts[:, 1], render_image_pts[:, 0]]
+        on_mesh_idxs = (matched_mesh_data[:, 3] > 0).nonzero(as_tuple=False).flatten()
+
+        matched_triangle_idxs = toNumpy(matched_mesh_data[on_mesh_idxs, 3].to(torch.int32))
+        triangle_vertices = self.mesh.vertices[self.mesh.faces[matched_triangle_idxs]]
+        matched_triangle_centers = triangle_vertices.mean(axis=1)
+
+        image_uv = toTensor(match_result['mkpts0'], torch.float32, self.device) / torch.tensor(
+            [width, height], dtype=torch.float32, device=self.device)
+        matched_uv = image_uv[on_mesh_idxs]
+
+        matched_uv[:, 1] = 1.0 - matched_uv[:, 1]
+
+        estimated_camera = Camera.fromUVPointsV2(
+            matched_triangle_centers,
+            matched_uv,
+            width=width,
+            height=height,
+            device=self.device,
+        )
+
+        return estimated_camera
+
+    def getIoU(
+        self,
+        image: np.ndarray,
+        render_dict: dict,
+    ) -> float:
+        # HxWx4, u right, v down
+        rasterize_output = render_dict['rasterize_output']
+
+        # 计算mesh渲染出来的像素mask
+        mesh_mask = rasterize_output[..., 3] > 0  # [H, W] bool
+
+        # RGB阈值
+        white_thr = int(0.93 * 255)   # 可以调
+        if image.ndim == 2 or (image.ndim == 3 and image.shape[2] == 1):
+            # 灰度图情况
+            white_mask = image < white_thr
+        elif image.ndim == 3 and image.shape[2] >= 3:
+            # 彩色或有alpha通道的情况
+            white_mask = np.all(image[..., :3] < white_thr, axis=-1)
+        else:
+            raise ValueError(f"Unexpected image shape: {image.shape}")
+
+        # 计算IoU
+        intersection = np.logical_and(mesh_mask.cpu().numpy(), white_mask)
+        union = np.logical_or(mesh_mask.cpu().numpy(), white_mask)
+        iou = intersection.sum() / (union.sum() + 1e-5)
+
+        return iou
+
     def matchMeshToImageFile(
         self,
         image_file_path: str,
-        save_match_result_folder_path: str,
+        save_match_result_folder_path: Optional[str],
     ) -> Tuple[dict, dict]:
+        render = save_match_result_folder_path is not None
+
         if not os.path.exists(image_file_path):
             print('[ERROR][MeshMatcher::matchMeshToImageFile]')
             print('\t image file not exist!')
@@ -88,94 +156,109 @@ class MeshMatcher(object):
 
         render_dict, match_result = self.matchMeshToImage(image, init_camera)
 
-        render_image_file_path = save_match_result_folder_path + 'debug.png'
-        createFileFolder(render_image_file_path)
-        cv2.imwrite(render_image_file_path, render_dict['image'])
+        if render:
+            concat_vis = self.renderMatchResult(
+                image_file_path,
+                render_dict,
+                match_result,
+            )
 
-        img_vis = self.detector.renderMatchResult(
-            match_result,
-            image_file_path,
-            render_image_file_path,
-        )
-        save_path=save_match_result_folder_path + "render_matches_all.jpg"
-        createFileFolder(save_path)
-        cv2.imwrite(save_path, img_vis)
+            save_path = save_match_result_folder_path + "matches_0.jpg"
+            createFileFolder(save_path)
+            cv2.imwrite(save_path, concat_vis)
 
-        # [W, H]
-        render_image_pts = torch.from_numpy(np.round(match_result['mkpts1'])).to(torch.int32)
+        best_iou = 0
+        best_camera = init_camera.clone()
 
+        for i in range(1, 11):
+            estimated_camera = self.estimateCamera(render_dict, match_result)
+
+            render_dict, match_result = self.matchMeshToImage(image, estimated_camera)
+
+            iou = self.getIoU(image, render_dict)
+
+            if iou > best_iou:
+                best_iou = iou
+                best_camera = estimated_camera.clone()
+                print('[INFO][MeshMatcher::matchMeshToImage]')
+                print('\t best_iou:', best_iou)
+                print('\t best_match_idx:', i)
+
+            if render:
+                concat_vis = self.renderMatchResult(
+                    image_file_path,
+                    render_dict,
+                    match_result,
+                )
+                save_path = save_match_result_folder_path + "matches_" + str(i) + ".jpg"
+                createFileFolder(save_path)
+                cv2.imwrite(save_path, concat_vis)
+
+        return best_camera
+
+    def renderIoU(
+        self,
+        image: np.ndarray,
+        render_dict: dict,
+    ) -> np.ndarray:
         # HxWx4, u right, v down
-        rasterize_output = render_dict['rasterize_output'].detach().cpu()
+        rasterize_output = render_dict['rasterize_output']
 
-        matched_mesh_data = rasterize_output[render_image_pts[:, 1], render_image_pts[:, 0]]
-        on_mesh_idxs = (matched_mesh_data[:, 3] > 0).nonzero(as_tuple=False).flatten()
+        # 计算mesh渲染出来的像素mask
+        mesh_mask = rasterize_output[..., 3] > 0  # [H, W] bool
 
-        matched_triangle_idxs = matched_mesh_data[on_mesh_idxs, 3].to(torch.int32)
-        triangle_vertices = self.mesh.vertices[self.mesh.faces[matched_triangle_idxs]]
-        matched_triangle_centers = triangle_vertices.mean(axis=1)
+        # RGB阈值
+        white_thr = int(0.93 * 255)   # 可以调
+        if image.ndim == 2 or (image.ndim == 3 and image.shape[2] == 1):
+            # 灰度图情况
+            white_mask = image < white_thr
+        elif image.ndim == 3 and image.shape[2] >= 3:
+            # 彩色或有alpha通道的情况
+            white_mask = np.all(image[..., :3] < white_thr, axis=-1)
+        else:
+            raise ValueError(f"Unexpected image shape: {image.shape}")
 
-        '''
-        mesh_uv = init_camera.project_points_to_uv(matched_triangle_centers)
-        mesh_uv[:, 1] = 1.0 - mesh_uv[:, 1]
-        mesh_pixel = mesh_uv * torch.tensor([image.shape[1], image.shape[0]], dtype=torch.int32, device=init_camera.device)
-        mesh_pixel = mesh_pixel.to(torch.int32)
+        if image.ndim == 2 or (image.ndim == 3 and image.shape[2] == 1):
+            # 灰度图转三通道
+            image_vis = np.stack([image.squeeze()] * 3, axis=-1)
+        else:
+            image_vis = image.copy()
 
-        img_points_vis = render_dict['image'].copy()
-        if len(img_points_vis.shape) == 2:  # grayscale, expand to 3 channels
-            img_points_vis = cv2.cvtColor(img_points_vis, cv2.COLOR_GRAY2BGR)
+        iou_vis = np.zeros_like(image_vis)
+        mesh_mask_np = mesh_mask.cpu().numpy()
+        intersection_mask = np.logical_and(mesh_mask_np, white_mask)
+        mesh_only_mask = np.logical_and(mesh_mask_np, ~white_mask)
+        white_only_mask = np.logical_and(~mesh_mask_np, white_mask)
+        iou_vis[mesh_only_mask] = [0,0,255]
+        iou_vis[white_only_mask] = [0,255,0]
+        iou_vis[intersection_mask] = [255,0,0]
 
-        for pt in mesh_pixel.cpu().numpy():
-            x, y = int(pt[0]), int(pt[1])
-            cv2.circle(img_points_vis, (x, y), radius=3, color=(0, 0, 255), thickness=-1)
+        return iou_vis
 
-        save_vis_points_path = save_match_result_folder_path + 'mesh_and_image_points.png'
-        createFileFolder(save_vis_points_path)
-        cv2.imwrite(save_vis_points_path, img_points_vis)
-
-        # 查询rasterize_output[:, 3] >= 0的所有uv，将其颜色设为白色，保存为图片
-        mask_valid = (rasterize_output[:, :, 3] > 0)
-
-        # 创建副本以防止修改原图
-        green_mask_vis = render_dict['image'].copy()
-        if len(green_mask_vis.shape) == 2:  # 如果是灰度，转换为3通道
-            green_mask_vis = cv2.cvtColor(green_mask_vis, cv2.COLOR_GRAY2BGR)
-        # 将mask区域设为白色
-        green_mask_vis[mask_valid] = [0, 255, 0]
-
-        save_green_mask_path = save_match_result_folder_path + 'green_mask_pixels.png'
-        createFileFolder(save_green_mask_path)
-        cv2.imwrite(save_green_mask_path, green_mask_vis)
-        exit()
-        '''
-
-        image_uv = toTensor(match_result['mkpts0'], init_camera.dtype, init_camera.device) / torch.tensor([image.shape[1], image.shape[0]], dtype=init_camera.dtype, device=init_camera.device)
-        matched_uv = image_uv[on_mesh_idxs]
-
-        matched_uv[:, 1] = 1.0 - matched_uv[:, 1]
-
-        estimated_camera = Camera.fromUVPointsV2(
-            matched_triangle_centers,
-            matched_uv,
-            width=init_camera.width,
-            height=init_camera.height,
-            device=init_camera.device,
-        )
-
-        init_camera.outputInfo()
-        estimated_camera.outputInfo()
-
-        render_dict, match_result = self.matchMeshToImage(image, estimated_camera)
-
-        render_image_file_path = save_match_result_folder_path + 'debug_fitting.png'
-        createFileFolder(render_image_file_path)
-        cv2.imwrite(render_image_file_path, render_dict['image'])
-
+    def renderMatchResult(
+        self,
+        image_file_path: str,
+        render_dict: dict,
+        match_result: dict,
+    ) -> np.ndarray:
         img_vis = self.detector.renderMatchResult(
             match_result,
             image_file_path,
-            render_image_file_path,
+            render_dict['image'],
         )
-        save_path=save_match_result_folder_path + "render_matches_all_fitting.jpg"
-        createFileFolder(save_path)
-        cv2.imwrite(save_path, img_vis)
-        return render_dict, match_result
+
+        image = loadImage(image_file_path, is_gray=False)
+        iou_vis = self.renderIoU(image, render_dict)
+
+        # 拼接iou_vis和img_vis（H相同，W可能不同），沿第1维（水平方向）拼接
+        iou_vis_uint8 = iou_vis.astype(np.uint8) if iou_vis.dtype != np.uint8 else iou_vis
+        img_vis_uint8 = img_vis.astype(np.uint8) if img_vis.dtype != np.uint8 else img_vis
+
+        # 如果H不同则取最小H
+        min_h = min(iou_vis_uint8.shape[0], img_vis_uint8.shape[0])
+        iou_vis_slice = iou_vis_uint8[:min_h]
+        img_vis_slice = img_vis_uint8[:min_h]
+
+        concat_vis = np.concatenate([img_vis_slice, iou_vis_slice], axis=1)
+
+        return concat_vis

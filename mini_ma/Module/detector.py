@@ -201,8 +201,8 @@ class Detector(object):
     def renderMatchResult(
         self,
         match_result: Dict[str, Any],
-        img0_path: str,
-        img1_path: str,
+        img0: Union[str, np.ndarray],
+        img1: Union[str, np.ndarray],
         show_inliers_only: bool = False,
         dpi: int = 150,
     ) -> np.ndarray:
@@ -231,8 +231,14 @@ class Detector(object):
             print('\t Missing mkpts0 or mkpts1 in match_result!')
             return None
 
-        img0_color = cv2.imread(img0_path)
-        img1_color = cv2.imread(img1_path)
+        if isinstance(img0, str):
+            img0_color = cv2.imread(img0)
+        else:
+            img0_color = img0
+        if isinstance(img1, str):
+            img1_color = cv2.imread(img1)
+        else:
+            img1_color = img1
 
         if img0_color is None or img1_color is None:
             print('[ERROR][Detector::renderMatchResult]')
