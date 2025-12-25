@@ -3,7 +3,7 @@ import cv2
 import torch
 import trimesh
 import numpy as np
-from typing import Optional, Tuple
+from typing import Tuple, Optional
 
 from camera_control.Module.camera import Camera
 from camera_control.Module.nvdiffrast_renderer import NVDiffRastRenderer
@@ -25,10 +25,12 @@ class CameraMatcher(object):
     ) -> None:
         self.device = device
 
+        '''
         self.detector = Detector(
             method=method,
             model_file_path=model_file_path,
         )
+        '''
 
         self.nvdiffrast_renderer = NVDiffRastRenderer(
             mesh_file_path,
@@ -40,11 +42,11 @@ class CameraMatcher(object):
     def mesh(self) -> trimesh.Trimesh:
         return self.nvdiffrast_renderer.mesh
 
-    def estimateCamera(
+    def extractMatchedUVTriangle(
         self,
         render_dict: dict,
         match_result: dict,
-    ) -> Camera:
+    ) -> Tuple[torch.Tensor, np.ndarray]:
         # [W, H]
         render_image_pts = torch.from_numpy(
             np.round(match_result['mkpts1'])).to(dtype=torch.int32, device=self.device)
@@ -63,14 +65,26 @@ class CameraMatcher(object):
         on_mesh_idxs = (matched_mesh_data[:, 3] > 0).nonzero(as_tuple=False).flatten()
 
         matched_triangle_idxs = toNumpy(matched_mesh_data[on_mesh_idxs, 3].to(torch.int32))
-        triangle_vertices = self.mesh.vertices[self.mesh.faces[matched_triangle_idxs]]
-        matched_triangle_centers = triangle_vertices.mean(axis=1)
 
         image_uv = toTensor(match_result['mkpts0'], torch.float32, self.device) / torch.tensor(
             [width, height], dtype=torch.float32, device=self.device)
         matched_uv = image_uv[on_mesh_idxs]
 
         matched_uv[:, 1] = 1.0 - matched_uv[:, 1]
+
+        return matched_uv, matched_triangle_idxs
+
+    def estimateCamera(
+        self,
+        render_dict: dict,
+        match_result: dict,
+    ) -> Camera:
+        height, width = render_dict['image'].shape[:2]
+
+        matched_uv, matched_triangle_idxs = self.extractMatchedUVTriangle(render_dict, match_result)
+
+        triangle_vertices = self.mesh.vertices[self.mesh.faces[matched_triangle_idxs]]
+        matched_triangle_centers = triangle_vertices.mean(axis=1)
 
         estimated_camera = Camera.fromUVPoints(
             matched_triangle_centers,
@@ -116,14 +130,14 @@ class CameraMatcher(object):
         image_file_path: str,
         save_match_result_folder_path: Optional[str],
         iter_num: int = 1,
-    ) -> Optional[Camera]:
+    ) -> Tuple[Optional[Camera], Optional[dict], Optional[dict]]:
         render = save_match_result_folder_path is not None
 
         if not os.path.exists(image_file_path):
             print('[ERROR][CameraMatcher::matchCameraToMeshImageFile]')
             print('\t image file not exist!')
             print('\t image_file_path:', image_file_path)
-            return {}, {}
+            return None, None, None
 
         # HxWx3
         image = loadImage(image_file_path, is_gray=True)
@@ -144,16 +158,14 @@ class CameraMatcher(object):
             light_direction=light_direction,
         )
 
-        is_match_updated = False
+        match_result = self.detector.detect(image, render_dict['image'])
+
+        if match_result is None:
+            print('[ERROR][CameraMatcher::matchMeshImagePairs]')
+            print('\t matching pairs detect failed!')
+            return None, render_dict, None
+
         if render:
-            match_result = self.detector.detect(image, render_dict['image'])
-            is_match_updated = True
-
-            if match_result is None:
-                print('[ERROR][CameraMatcher::matchMeshImagePairs]')
-                print('\t matching pairs detect failed!')
-                return None
-
             concat_vis = self.renderMatchResult(
                 image_file_path,
                 render_dict,
@@ -168,16 +180,19 @@ class CameraMatcher(object):
         best_camera = init_camera.clone()
 
         for i in range(1, 1 + iter_num):
-            if not is_match_updated:
-                match_result = self.detector.detect(image, render_dict['image'])
-                is_match_updated = True
-
             estimated_camera = self.estimateCamera(render_dict, match_result)
 
             render_dict = self.nvdiffrast_renderer.renderImage(
                 estimated_camera,
                 light_direction=light_direction,
             )
+
+            match_result = self.detector.detect(image, render_dict['image'])
+
+            if match_result is None:
+                print('[ERROR][CameraMatcher::matchMeshImagePairs]')
+                print('\t matching pairs detect failed!')
+                return best_camera, render_dict, None
 
             iou = self.getIoU(image, render_dict)
 
@@ -188,16 +203,7 @@ class CameraMatcher(object):
                 print('\t best_iou:', best_iou)
                 print('\t best_match_idx:', i)
 
-            is_match_updated = False
             if render:
-                match_result = self.detector.detect(image, render_dict['image'])
-                is_match_updated = True
-
-                if match_result is None:
-                    print('[ERROR][CameraMatcher::matchMeshImagePairs]')
-                    print('\t matching pairs detect failed!')
-                    return None
-
                 concat_vis = self.renderMatchResult(
                     image_file_path,
                     render_dict,
@@ -207,7 +213,7 @@ class CameraMatcher(object):
                 createFileFolder(save_path)
                 cv2.imwrite(save_path, concat_vis)
 
-        return best_camera
+        return best_camera, render_dict, match_result
 
     def renderIoU(
         self,

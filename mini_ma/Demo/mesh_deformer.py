@@ -1,9 +1,10 @@
 import sys
 sys.path.append('../camera-control')
+sys.path.append('../non-rigid-icp')
 
 import os
 
-from mini_ma.Module.camera_matcher import CameraMatcher
+from mini_ma.Module.mesh_deformer import MeshDeformer
 
 
 def demo():
@@ -16,7 +17,7 @@ def demo():
     mesh_color = [178, 178, 178]
     save_match_result_folder_path = home + '/chLi/Dataset/MM/Match/people_1/minima_mesh/'
 
-    camera_matcher = CameraMatcher(
+    mesh_deformer = MeshDeformer(
         mesh_file_path,
         method='roma',
         model_file_path=model_file_path,
@@ -24,10 +25,10 @@ def demo():
         color=mesh_color,
     )
 
-    camera, render_dict, match_result = camera_matcher.matchCameraToMeshImageFile(
+    mesh = mesh_deformer.matchMeshToImageFile(
         image_file_path,
         save_match_result_folder_path,
     )
 
-    camera.outputInfo()
+    print(mesh)
     return True
