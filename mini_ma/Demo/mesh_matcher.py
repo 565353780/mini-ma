@@ -9,6 +9,7 @@ from mini_ma.Module.mesh_matcher import MeshMatcher
 def demo():
     home = os.environ['HOME']
     mesh_file_path = home + '/chLi/Dataset/MM/Match/1024result/c6c113443a8ebb331ed307f33b1385c31a7d0c2fa8ed97b511511048e9e1a4afv1_5_-1_stagetwo_1024.glb'
+    mesh_file_path = home + '/chLi/Dataset/MM/Match/GTstageone/c6c113443a8ebb331ed307f33b1385c31a7d0c2fa8ed97b511511048e9e1a4af_decoded.ply'
     model_file_path = home + '/chLi/Model/MINIMA/minima_lightglue.pth'
     image_file_path = home + '/chLi/Dataset/MM/Match/inputimage/c6c113443a8ebb331ed307f33b1385c31a7d0c2fa8ed97b511511048e9e1a4af.jpg'
     device = 'cuda:7'

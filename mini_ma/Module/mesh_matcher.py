@@ -86,7 +86,7 @@ class MeshMatcher(object):
 
         matched_uv[:, 1] = 1.0 - matched_uv[:, 1]
 
-        estimated_camera = Camera.fromUVPointsV2(
+        estimated_camera = Camera.fromUVPoints(
             matched_triangle_centers,
             matched_uv,
             width=width,
@@ -148,11 +148,12 @@ class MeshMatcher(object):
         init_camera = Camera(
             width=image.shape[1],
             height=image.shape[0],
-            pos=center + [0, 0, 1],
-            look_at=center,
+            pos=[0, 0, 1],
+            look_at=[0, 0, 0],
             up=[0, 1, 0],
             device=self.device,
         )
+        init_camera.focusOnPoints(self.mesh.vertices)
 
         render_dict, match_result = self.matchMeshToImage(image, init_camera)
 

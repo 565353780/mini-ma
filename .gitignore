@@ -12,3 +12,11 @@ src/utils/else_module
 !assets/infrared.png
 !data_engine/figs/example.png
 !data_engine/tools/paint/paint_transformer/brush/*
+
+# compiled
+__pycache__
+.DS_Store
+
+# output
+logs
+output
