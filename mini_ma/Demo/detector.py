@@ -27,17 +27,17 @@ image_pairs_dict = {
 
 
 def demo_folders():
-    model_file_path = home + '/chLi/Model/MINIMA/minima_lightglue.pth'
+    model_file_path = home + '/chLi/Model/MINIMA/minima_roma.pth'
 
     detector = Detector(
-        method='sp_lg',
+        method='roma',
         model_file_path=model_file_path,
     )
 
     for image_pair_id in image_pairs_dict.keys():
-        model_file_path = home + '/chLi/Model/MINIMA/minima_lightglue.pth'
+        model_file_path = home + '/chLi/Model/MINIMA/minima_roma.pth'
         image1_file_path, image2_file_path = image_pairs_dict[image_pair_id]
-        save_match_result_folder_path = home + '/chLi/Dataset/MM/Match/' + image_pair_id + '/minima_sp_lg/'
+        save_match_result_folder_path = home + '/chLi/Dataset/MM/Match/' + image_pair_id + '/minima_roma/'
 
         match_result = detector.detectImageFilePair(image1_file_path, image2_file_path)
 

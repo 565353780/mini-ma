@@ -16,7 +16,7 @@ from mini_ma.Method.plotting import make_matching_figure
 class Detector(object):
     def __init__(
         self,
-        method: str = "sp_lg",
+        method: str = "roma",
         model_file_path: Optional[str] = None,
         match_threshold: Optional[float] = None,
         fine_threshold: Optional[float] = None,

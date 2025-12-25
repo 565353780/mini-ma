@@ -14,11 +14,11 @@ from mini_ma.Method.path import createFileFolder
 from mini_ma.Module.detector import Detector
 
 
-class MeshMatcher(object):
+class CameraMatcher(object):
     def __init__(
         self,
         mesh_file_path: str,
-        method: str = "sp_lg",
+        method: str = "roma",
         model_file_path: Optional[str] = None,
         color: list=[178, 178, 178],
         device: str = 'cuda:0',
@@ -40,7 +40,7 @@ class MeshMatcher(object):
     def mesh(self) -> trimesh.Trimesh:
         return self.nvdiffrast_renderer.mesh
 
-    def matchMeshToImage(
+    def matchMeshImagePairs(
         self,
         image: np.ndarray,
         camera: Camera,
@@ -53,7 +53,7 @@ class MeshMatcher(object):
         match_result = self.detector.detect(image, render_dict['image'])
 
         if match_result is None:
-            print('[ERROR][MeshMatcher::matchMeshToImage]')
+            print('[ERROR][CameraMatcher::matchMeshImagePairs]')
             print('\t matching pairs detect failed!')
             return render_dict, {}
 
@@ -125,7 +125,7 @@ class MeshMatcher(object):
 
         return iou
 
-    def matchMeshToImageFile(
+    def matchCameraToMeshImageFile(
         self,
         image_file_path: str,
         save_match_result_folder_path: Optional[str],
@@ -133,7 +133,7 @@ class MeshMatcher(object):
         render = save_match_result_folder_path is not None
 
         if not os.path.exists(image_file_path):
-            print('[ERROR][MeshMatcher::matchMeshToImageFile]')
+            print('[ERROR][CameraMatcher::matchCameraToMeshImageFile]')
             print('\t image file not exist!')
             print('\t image_file_path:', image_file_path)
             return {}, {}
@@ -151,7 +151,7 @@ class MeshMatcher(object):
         )
         init_camera.focusOnPoints(self.mesh.vertices)
 
-        render_dict, match_result = self.matchMeshToImage(image, init_camera)
+        render_dict, match_result = self.matchMeshImagePairs(image, init_camera)
 
         if render:
             concat_vis = self.renderMatchResult(
@@ -170,14 +170,14 @@ class MeshMatcher(object):
         for i in range(1, 11):
             estimated_camera = self.estimateCamera(render_dict, match_result)
 
-            render_dict, match_result = self.matchMeshToImage(image, estimated_camera)
+            render_dict, match_result = self.matchMeshImagePairs(image, estimated_camera)
 
             iou = self.getIoU(image, render_dict)
 
             if iou > best_iou:
                 best_iou = iou
                 best_camera = estimated_camera.clone()
-                print('[INFO][MeshMatcher::matchMeshToImage]')
+                print('[INFO][CameraMatcher::matchCameraToMeshImageFile]')
                 print('\t best_iou:', best_iou)
                 print('\t best_match_idx:', i)
 
