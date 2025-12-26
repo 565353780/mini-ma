@@ -1,8 +1,11 @@
 import os
+import cv2
 import torch
 import trimesh
 import numpy as np
 from typing import Tuple, Optional
+
+from camera_control.Module.nvdiffrast_renderer import NVDiffRastRenderer
 
 from non_rigid_icp.Data.mesh import Mesh
 from non_rigid_icp.Module.optimal_mapper import OptimalMapper
@@ -12,6 +15,7 @@ from cage_deform.Module.cage_deformer import CageDeformer
 from camera_control.Module.camera import Camera
 from camera_control.Module.nvdiffrast_renderer import NVDiffRastRenderer
 
+from mini_ma.Method.io import loadImage
 from mini_ma.Method.data import toNumpy, toTensor
 from mini_ma.Module.detector import Detector
 from mini_ma.Module.camera_matcher import CameraMatcher
@@ -208,11 +212,11 @@ class MeshDeformer(object):
         source_vertex_idxs: np.ndarray,
         target_vertices: np.ndarray,
     ) -> trimesh.Trimesh:
-        voxel_size = 1.0 / 8
+        voxel_size = 1.0 / 64
         padding = 0.1
         lr = 1e-2
         lambda_reg = 1e4
-        steps = 500
+        steps = 1000
         dtype = torch.float32
 
         vertices = toTensor(self.mesh.vertices, dtype, self.device)
@@ -263,6 +267,7 @@ class MeshDeformer(object):
             source_pcd_path = save_match_result_folder_path + 'matched_source_vertices.ply'
             target_pcd_path = save_match_result_folder_path + 'matched_target_vertices.ply'
             deformed_mesh_path = save_match_result_folder_path + 'deformed_mesh.ply'
+            deformed_mesh_iou_image_path = save_match_result_folder_path + 'deformed_iou.png'
 
             source_pcd = trimesh.PointCloud(vertices=self.mesh.vertices[filtered_source_vertex_idxs])
             target_pcd = trimesh.PointCloud(vertices=filtered_target_vertices)
@@ -270,14 +275,50 @@ class MeshDeformer(object):
             source_pcd.export(source_pcd_path)
             target_pcd.export(target_pcd_path)
 
-            # 保存deformed_mesh为PLY文件
             deformed_mesh.export(deformed_mesh_path)
 
-            print(f'[INFO][MeshDeformer::searchDeformPairs]')
-            print(f'\t 保存源顶点点云: {source_pcd_path}')
-            print(f'\t 保存目标顶点点云: {target_pcd_path}')
-            print(f'\t 保存deformed_mesh: {deformed_mesh_path}')
-            print(f'\t 点数: {filtered_source_vertex_idxs.shape[0]}')
+            nvdiffrast_renderer = NVDiffRastRenderer(deformed_mesh_path, [178, 178, 178])
+
+            render_dict = nvdiffrast_renderer.renderImage(
+                camera,
+                light_direction=[1, 1, 1],
+            )
+
+            image = loadImage(image_file_path)
+            iou_vis = self.camera_matcher.renderIoU(image, render_dict)
+            cv2.imwrite(deformed_mesh_iou_image_path, iou_vis)
+
+            # HxWx4, u right, v down
+            rasterize_output = render_dict['rasterize_output']
+
+            # 计算mesh渲染出来的像素mask
+            mesh_mask = rasterize_output[..., 3] > 0  # [H, W] bool
+
+            # RGB阈值
+            white_thr = int(0.93 * 255)   # 可以调
+            if image.ndim == 2 or (image.ndim == 3 and image.shape[2] == 1):
+                # 灰度图情况
+                white_mask = image < white_thr
+            elif image.ndim == 3 and image.shape[2] >= 3:
+                # 彩色或有alpha通道的情况
+                white_mask = np.all(image[..., :3] < white_thr, axis=-1)
+            else:
+                raise ValueError(f"Unexpected image shape: {image.shape}")
+
+            mesh_mask_np = mesh_mask.cpu().numpy()
+
+            # 保存mask为图片
+            # HxW单通道mask保存为png需转换为HxWx1, 否则有些cv2读取为三通道错误
+            mesh_mask_img = (mesh_mask_np.astype(np.uint8) * 255)
+            mesh_mask_img = mesh_mask_img[..., None]  # [H,W,1]
+            white_mask_img = (white_mask.astype(np.uint8) * 255)
+            white_mask_img = white_mask_img[..., None]  # [H,W,1]
+
+            mesh_mask_path = save_match_result_folder_path + 'mesh_mask.png'
+            white_mask_path = save_match_result_folder_path + 'white_mask.png'
+
+            cv2.imwrite(mesh_mask_path, mesh_mask_img)
+            cv2.imwrite(white_mask_path, white_mask_img)
 
         return deformed_mesh
 

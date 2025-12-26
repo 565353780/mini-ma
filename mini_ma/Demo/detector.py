@@ -23,6 +23,10 @@ image_pairs_dict = {
         home + '/chLi/Dataset/MM/Match/inputimage/download_fullbody_man.png',
         home + '/chLi/Dataset/MM/Match/people_2/gen_stage1gt.PNG',
     ],
+    'people_1_mask': [
+        home + '/chLi/Dataset/MM/Match/people_1/minima_mesh/white_mask.png',
+        home + '/chLi/Dataset/MM/Match/people_1/minima_mesh/mesh_mask.png',
+    ],
 }
 
 
@@ -35,7 +39,6 @@ def demo_folders():
     )
 
     for image_pair_id in image_pairs_dict.keys():
-        model_file_path = home + '/chLi/Model/MINIMA/minima_roma.pth'
         image1_file_path, image2_file_path = image_pairs_dict[image_pair_id]
         save_match_result_folder_path = home + '/chLi/Dataset/MM/Match/' + image_pair_id + '/minima_roma/'
 
@@ -72,7 +75,7 @@ def demo_folders():
     return True
 
 def demo():
-    image_pair_id = 'people_1'
+    image_pair_id = 'people_1_mask'
 
     model_file_path = home + '/chLi/Model/MINIMA/minima_lightglue.pth'
     image1_file_path, image2_file_path = image_pairs_dict[image_pair_id]
