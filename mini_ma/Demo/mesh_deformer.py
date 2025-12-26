@@ -1,6 +1,7 @@
 import sys
 sys.path.append('../camera-control')
 sys.path.append('../non-rigid-icp')
+sys.path.append('../cage-deform')
 
 import os
 

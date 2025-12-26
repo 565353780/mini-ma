@@ -7,10 +7,12 @@ from typing import Tuple, Optional
 from non_rigid_icp.Data.mesh import Mesh
 from non_rigid_icp.Module.optimal_mapper import OptimalMapper
 
+from cage_deform.Module.cage_deformer import CageDeformer
+
 from camera_control.Module.camera import Camera
 from camera_control.Module.nvdiffrast_renderer import NVDiffRastRenderer
 
-from mini_ma.Method.data import toTensor
+from mini_ma.Method.data import toNumpy, toTensor
 from mini_ma.Module.detector import Detector
 from mini_ma.Module.camera_matcher import CameraMatcher
 
@@ -140,7 +142,7 @@ class MeshDeformer(object):
 
         return filtered_source_vertex_idxs, filtered_target_vertices
 
-    def deformMesh(
+    def deformMeshByNICP(
         self,
         source_vertex_idxs: np.ndarray,
         target_vertices: np.ndarray,
@@ -201,82 +203,57 @@ class MeshDeformer(object):
 
         return deformed_trimesh
 
+    def deformMeshByCage(
+        self,
+        source_vertex_idxs: np.ndarray,
+        target_vertices: np.ndarray,
+    ) -> trimesh.Trimesh:
+        voxel_size = 1.0 / 8
+        padding = 0.1
+        lr = 1e-2
+        lambda_reg = 1e4
+        steps = 500
+        dtype = torch.float32
+
+        vertices = toTensor(self.mesh.vertices, dtype, self.device)
+
+        cage_deformer = CageDeformer(dtype, self.device)
+
+        deformed_vertices = cage_deformer.deformPoints(
+            vertices, source_vertex_idxs, target_vertices,
+            voxel_size, padding, lr, lambda_reg, steps,
+        )
+
+        deformed_trimesh = trimesh.Trimesh(
+            vertices=toNumpy(deformed_vertices, np.float64),
+            faces=self.mesh.faces,
+        )
+
+        return deformed_trimesh
+
     def matchMeshToImageFile(
         self,
         image_file_path: str,
         save_match_result_folder_path: str,
         max_deform_ratio: float = 0.05,
     ) -> Optional[trimesh.Trimesh]:
-
-        import pickle
-
-        # 定义保存路径
-        output_tmp_folder = "./output/tmp"
-        os.makedirs(output_tmp_folder, exist_ok=True)
-        import hashlib
-        def get_hash_id(*args):
-            s = ",".join([str(x) for x in args])
-            return hashlib.md5(s.encode()).hexdigest()
-        # 用于唯一标识保存的文件名
-        base_id = get_hash_id(image_file_path, save_match_result_folder_path)
-        camera_file = os.path.join(output_tmp_folder, f"{base_id}_camera.pkl")
-        render_dict_file = os.path.join(output_tmp_folder, f"{base_id}_render_dict.pkl")
-        match_result_file = os.path.join(output_tmp_folder, f"{base_id}_match_result.pkl")
-
-        # 检查文件是否已存在并可用
-        if os.path.exists(camera_file) and os.path.exists(render_dict_file) and os.path.exists(match_result_file):
-            try:
-                with open(camera_file, 'rb') as f:
-                    camera = pickle.load(f)
-                with open(render_dict_file, 'rb') as f:
-                    render_dict = pickle.load(f)
-                with open(match_result_file, 'rb') as f:
-                    match_result = pickle.load(f)
-                print("[INFO][MeshDeformer::matchMeshToImageFile] 读取已缓存的匹配结果。")
-            except Exception as e:
-                print(f"[WARNING][MeshDeformer::matchMeshToImageFile] 读取缓存失败，将重新计算。错误: {e}")
-                camera, render_dict, match_result = self.camera_matcher.matchCameraToMeshImageFile(
-                    image_file_path,
-                    save_match_result_folder_path,
-                )
-                # 保存到文件
-                with open(camera_file, 'wb') as f:
-                    pickle.dump(camera, f)
-                # 转为 cpu，防止gpu环境不兼容
-                def tensor_dict_to_cpu(d):
-                    return {k: (v.cpu() if hasattr(v,"cpu") else v) for k, v in d.items()}
-                with open(render_dict_file, 'wb') as f:
-                    pickle.dump(tensor_dict_to_cpu(render_dict), f)
-                with open(match_result_file, 'wb') as f:
-                    pickle.dump(tensor_dict_to_cpu(match_result), f)
-        else:
-            camera, render_dict, match_result = self.camera_matcher.matchCameraToMeshImageFile(
-                image_file_path,
-                save_match_result_folder_path,
-            )
-            with open(camera_file, 'wb') as f:
-                pickle.dump(camera, f)
-            def tensor_dict_to_cpu(d):
-                return {k: (v.cpu() if hasattr(v,"cpu") else v) for k, v in d.items()}
-            with open(render_dict_file, 'wb') as f:
-                pickle.dump(tensor_dict_to_cpu(render_dict), f)
-            with open(match_result_file, 'wb') as f:
-                pickle.dump(tensor_dict_to_cpu(match_result), f)
+        camera, render_dict, match_result = self.matchCameraToMeshImageFile(
+            image_file_path,
+            save_match_result_folder_path,
+            iter_num=1,
+        )
 
         if camera is None or render_dict is None or match_result is None:
             print('[ERROR][MeshDeformer::matchMeshToImageFile]')
             print('\t matchCamera failed!')
             return None
 
-        render_dict = toGPU(render_dict, camera.device)
-        match_result = toGPU(match_result, camera.device)
-
         source_vertex_idxs, target_vertices = self.searchDeformPairs(camera, render_dict, match_result)
 
         filtered_source_vertex_idxs, filtered_target_vertices = self.filterDeformPairs(
             source_vertex_idxs, target_vertices, max_deform_ratio)
 
-        deformed_mesh = self.deformMesh(filtered_source_vertex_idxs, filtered_target_vertices)
+        deformed_mesh = self.deformMeshByCage(filtered_source_vertex_idxs, filtered_target_vertices)
 
         # 保存为PLY点云文件
         # 确保保存文件夹存在
@@ -303,3 +280,58 @@ class MeshDeformer(object):
             print(f'\t 点数: {filtered_source_vertex_idxs.shape[0]}')
 
         return deformed_mesh
+
+    def matchCameraToMeshImageFile(
+        self,
+        image_file_path: str,
+        save_match_result_folder_path: Optional[str],
+        iter_num: int = 1,
+    ) -> Tuple[Optional[Camera], Optional[dict], Optional[dict]]:
+        import pickle
+
+        # 定义保存路径
+        output_tmp_folder = "./output/tmp"
+        os.makedirs(output_tmp_folder, exist_ok=True)
+        import hashlib
+        def get_hash_id(*args):
+            s = ",".join([str(x) for x in args])
+            return hashlib.md5(s.encode()).hexdigest()
+        # 用于唯一标识保存的文件名
+        base_id = get_hash_id(image_file_path, save_match_result_folder_path)
+        camera_file = os.path.join(output_tmp_folder, f"{base_id}_camera.pkl")
+        render_dict_file = os.path.join(output_tmp_folder, f"{base_id}_render_dict.pkl")
+        match_result_file = os.path.join(output_tmp_folder, f"{base_id}_match_result.pkl")
+
+        # 检查文件是否已存在并可用
+        if os.path.exists(camera_file) and os.path.exists(render_dict_file) and os.path.exists(match_result_file):
+            try:
+                with open(camera_file, 'rb') as f:
+                    camera = pickle.load(f)
+                with open(render_dict_file, 'rb') as f:
+                    render_dict = pickle.load(f)
+                with open(match_result_file, 'rb') as f:
+                    match_result = pickle.load(f)
+
+                render_dict = toGPU(render_dict, camera.device)
+                match_result = toGPU(match_result, camera.device)
+                print("[INFO][MeshDeformer::matchMeshToImageFile] 读取已缓存的匹配结果。")
+
+                return camera, render_dict, match_result
+            except:
+                pass
+
+        camera, render_dict, match_result = self.camera_matcher.matchCameraToMeshImageFile(
+            image_file_path,
+            save_match_result_folder_path,
+            iter_num,
+        )
+        with open(camera_file, 'wb') as f:
+            pickle.dump(camera, f)
+        def tensor_dict_to_cpu(d):
+            return {k: (v.cpu() if hasattr(v,"cpu") else v) for k, v in d.items()}
+        with open(render_dict_file, 'wb') as f:
+            pickle.dump(tensor_dict_to_cpu(render_dict), f)
+        with open(match_result_file, 'wb') as f:
+            pickle.dump(tensor_dict_to_cpu(match_result), f)
+
+        return camera, render_dict, match_result
