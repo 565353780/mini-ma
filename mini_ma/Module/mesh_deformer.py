@@ -4,6 +4,9 @@ import trimesh
 import numpy as np
 from typing import Tuple, Optional
 
+from non_rigid_icp.Data.mesh import Mesh
+from non_rigid_icp.Module.optimal_mapper import OptimalMapper
+
 from camera_control.Module.camera import Camera
 from camera_control.Module.nvdiffrast_renderer import NVDiffRastRenderer
 
@@ -113,17 +116,17 @@ class MeshDeformer(object):
     def filterDeformPairs(
         self,
         source_vertex_idxs: np.ndarray,
-        target_points: np.ndarray,
+        target_vertices: np.ndarray,
         max_deform_ratio: float = 0.05,
     ) -> Tuple[np.ndarray, np.ndarray]:
-        source_points = self.mesh.vertices[source_vertex_idxs]
+        source_vertices = self.mesh.vertices[source_vertex_idxs]
 
-        deform_vectors = target_points - source_points
+        deform_vectors = target_vertices - source_vertices
         deform_lengths = np.linalg.norm(deform_vectors, axis=1)
 
         # 计算source pcd的bbox最大边长
-        bbox_min = source_points.min(axis=0)
-        bbox_max = source_points.max(axis=0)
+        bbox_min = source_vertices.min(axis=0)
+        bbox_max = source_vertices.max(axis=0)
         bbox_size = bbox_max - bbox_min
         max_bbox_len = np.max(bbox_size)
 
@@ -132,10 +135,71 @@ class MeshDeformer(object):
         valid_mask = deform_lengths <= deform_threshold
 
         # 只保留符合要求的点
-        filtered_source_points = source_points[valid_mask]
-        filtered_target_points = target_points[valid_mask]
+        filtered_source_vertex_idxs = source_vertex_idxs[valid_mask]
+        filtered_target_vertices = target_vertices[valid_mask]
 
-        return filtered_source_points, filtered_target_points
+        return filtered_source_vertex_idxs, filtered_target_vertices
+
+    def deformMesh(
+        self,
+        source_vertex_idxs: np.ndarray,
+        target_vertices: np.ndarray,
+    ) -> trimesh.Trimesh:
+        inner_iter = 50
+        outer_iter = 200
+        milestones = np.arange(10, outer_iter, 4)
+        masked_dist_thresh = 0.04
+        masked_dist_thresh = float("inf")
+        masked_dist_weight = 1.0
+        stiffness_weights = 64 * 0.8 ** np.arange(milestones.shape[0] + 1)
+        laplacian_weight = 1.0
+        target_vertices_weight = 1.0
+        save_result_folder_path = "auto"
+        save_log_folder_path = "auto"
+        render = False
+
+        print("milestones:", milestones)
+        print("stiffness_weights:", stiffness_weights)
+
+        optimal_mapper = OptimalMapper(
+            inner_iter,
+            outer_iter,
+            milestones,
+            masked_dist_thresh,
+            masked_dist_weight,
+            stiffness_weights,
+            laplacian_weight,
+            target_vertices_weight,
+            self.device,
+            save_result_folder_path,
+            save_log_folder_path,
+            render,
+        )
+
+        source_mesh = Mesh()
+        source_mesh.vertices = self.mesh.vertices
+        source_mesh.normalize()
+        optimal_mapper.loadTemplateMesh(source_mesh.vertices, self.mesh.faces)
+
+        target_mesh = Mesh()
+        target_mesh.vertices = target_vertices
+        target_mesh.transform(source_mesh.norm_center, source_mesh.norm_scale, is_inverse=False)
+        optimal_mapper.addTargetVerticesConstraint(source_vertex_idxs, target_mesh.vertices)
+
+        optimal_mapper.map()
+
+        deformed_mesh = optimal_mapper.toDeformedTemplateMesh()
+
+        deformed_mesh.transform(
+            source_mesh.norm_center, source_mesh.norm_scale, is_inverse=True
+        )
+
+        deformed_trimesh = trimesh.Trimesh(
+            vertices=deformed_mesh.vertices,
+            faces=deformed_mesh.triangles,
+        )
+
+        return deformed_trimesh
 
     def matchMeshToImageFile(
         self,
@@ -207,9 +271,12 @@ class MeshDeformer(object):
         render_dict = toGPU(render_dict, camera.device)
         match_result = toGPU(match_result, camera.device)
 
-        source_vertex_idxs, target_pts = self.searchDeformPairs(camera, render_dict, match_result)
+        source_vertex_idxs, target_vertices = self.searchDeformPairs(camera, render_dict, match_result)
 
-        source_pts, target_pts = self.filterDeformPairs(source_vertex_idxs, target_pts, max_deform_ratio)
+        filtered_source_vertex_idxs, filtered_target_vertices = self.filterDeformPairs(
+            source_vertex_idxs, target_vertices, max_deform_ratio)
+
+        deformed_mesh = self.deformMesh(filtered_source_vertex_idxs, filtered_target_vertices)
 
         # 保存为PLY点云文件
         # 确保保存文件夹存在
@@ -218,16 +285,21 @@ class MeshDeformer(object):
 
             source_pcd_path = save_match_result_folder_path + 'matched_source_vertices.ply'
             target_pcd_path = save_match_result_folder_path + 'matched_target_vertices.ply'
+            deformed_mesh_path = save_match_result_folder_path + 'deformed_mesh.ply'
 
-            source_pcd = trimesh.PointCloud(vertices=source_pts)
-            target_pcd = trimesh.PointCloud(vertices=target_pts)
+            source_pcd = trimesh.PointCloud(vertices=self.mesh.vertices[filtered_source_vertex_idxs])
+            target_pcd = trimesh.PointCloud(vertices=filtered_target_vertices)
 
             source_pcd.export(source_pcd_path)
             target_pcd.export(target_pcd_path)
 
+            # 保存deformed_mesh为PLY文件
+            deformed_mesh.export(deformed_mesh_path)
+
             print(f'[INFO][MeshDeformer::searchDeformPairs]')
             print(f'\t 保存源顶点点云: {source_pcd_path}')
             print(f'\t 保存目标顶点点云: {target_pcd_path}')
-            print(f'\t 点数: {source_pts.shape[0]}')
+            print(f'\t 保存deformed_mesh: {deformed_mesh_path}')
+            print(f'\t 点数: {filtered_source_vertex_idxs.shape[0]}')
 
-        return None
+        return deformed_mesh
