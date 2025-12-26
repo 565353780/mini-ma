@@ -3,11 +3,14 @@ import open3d as o3d
 
 source_mesh_file_path = "/Users/chli/Downloads/matched_source_vertices.ply"
 target_mesh_file_path = "/Users/chli/Downloads/matched_target_vertices.ply"
-
+deformed_mesh_file_path = "/Users/chli/Downloads/deformed_mesh.ply"
 
 # 读取两个点云文件
 source_pcd = o3d.io.read_point_cloud(source_mesh_file_path)
 target_pcd = o3d.io.read_point_cloud(target_mesh_file_path)
+deformed_mesh = o3d.io.read_triangle_mesh(deformed_mesh_file_path)
+deformed_mesh.compute_vertex_normals()
+deformed_mesh.paint_uniform_color([0, 0, 1])
 
 source_points = np.asarray(source_pcd.points)
 target_points = np.asarray(target_pcd.points)
@@ -55,7 +58,7 @@ filtered_target_pcd.points = o3d.utility.Vector3dVector(filtered_target_points)
 filtered_target_pcd.paint_uniform_color([0, 0, 1])   # 蓝色
 
 o3d.visualization.draw_geometries(
-    [filtered_source_pcd, filtered_target_pcd, line_set],
+    [filtered_source_pcd, filtered_target_pcd, line_set, deformed_mesh],
     window_name='点匹配连线',
     point_show_normal=False
 )
