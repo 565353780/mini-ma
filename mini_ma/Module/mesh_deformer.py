@@ -7,6 +7,7 @@ from typing import Tuple, Optional
 
 from camera_control.Module.nvdiffrast_renderer import NVDiffRastRenderer
 
+from mini_ma.Module.camera_matcher import CameraMatcher
 from non_rigid_icp.Data.mesh import Mesh
 from non_rigid_icp.Module.optimal_mapper import OptimalMapper
 
@@ -17,50 +18,15 @@ from camera_control.Module.nvdiffrast_renderer import NVDiffRastRenderer
 
 from mini_ma.Method.io import loadImage
 from mini_ma.Method.data import toNumpy, toTensor
-from mini_ma.Module.detector import Detector
-from mini_ma.Module.camera_matcher import CameraMatcher
 
-
-def toGPU(data_dict: dict, device: str = 'cuda:0') -> dict:
-    for key, value in data_dict.items():
-        if isinstance(value, torch.Tensor):
-            data_dict[key] = data_dict[key].to(device=device)
-    return data_dict
 
 class MeshDeformer(object):
-    def __init__(
-        self,
-        mesh_file_path: str,
-        method: str = "roma",
-        model_file_path: Optional[str] = None,
-        color: list=[178, 178, 178],
-        device: str = 'cuda:0',
-    ) -> None:
-        self.device = device
-
-        self.camera_matcher = CameraMatcher(
-            mesh_file_path,
-            method=method,
-            model_file_path=model_file_path,
-            color=color,
-            device=device,
-        )
+    def __init__(self) -> None:
         return
 
-    @property
-    def detector(self) -> Detector:
-        return self.camera_matcher.detector
-
-    @property
-    def nvdiffrast_renderer(self) -> NVDiffRastRenderer:
-        return self.camera_matcher.nvdiffrast_renderer
-
-    @property
-    def mesh(self) -> trimesh.Trimesh:
-        return self.nvdiffrast_renderer.mesh
-
+    @staticmethod
     def searchDeformPairs(
-        self,
+        mesh: trimesh.Trimesh,
         camera: Camera,
         render_dict: dict,
         match_result: dict,
@@ -68,21 +34,22 @@ class MeshDeformer(object):
         """
         返回source mesh顶点去重后的索引 unique_vertex_idxs，以及每个source vertex对应的target空间坐标。
         """
-        matched_uv, matched_triangle_idxs = self.camera_matcher.extractMatchedUVTriangle(render_dict, match_result)
+        matched_uv, matched_triangle_idxs = CameraMatcher.extractMatchedUVTriangle(
+            render_dict, match_result, camera.device)
 
         # 获取所有匹配三角面的顶点索引 (N, 3)
-        matched_face_vertex_idxs = self.mesh.faces[matched_triangle_idxs]  # (N, 3)
+        matched_face_vertex_idxs = mesh.faces[matched_triangle_idxs]  # (N, 3)
         all_vertex_idxs = matched_face_vertex_idxs.reshape(-1)  # (N*3,)
 
         # 对顶点索引去重，得到唯一的顶点索引及每个all_vertex_idxs对应的去重后索引
         unique_vertex_idxs, inverse_indices = np.unique(all_vertex_idxs, return_inverse=True)  # unique_vertex_idxs: (M,), inverse_indices: (N*3,)
 
         # 取原始source mesh上unique的顶点位置
-        matched_source_vertices_np = self.mesh.vertices[unique_vertex_idxs]  # (M, 3)
+        matched_source_vertices_np = mesh.vertices[unique_vertex_idxs]  # (M, 3)
 
         # === 计算每个face center的target点偏移 ===
         # (1) 取三角形顶点的坐标，计算质心
-        triangle_vertices = self.mesh.vertices[matched_face_vertex_idxs]  # (N, 3, 3)
+        triangle_vertices = mesh.vertices[matched_face_vertex_idxs]  # (N, 3, 3)
         matched_triangle_centers = triangle_vertices.mean(axis=1)  # (N, 3)
 
         # (2) 质心到相机坐标系
@@ -119,13 +86,14 @@ class MeshDeformer(object):
         # --- 这里返回 unique_vertex_idxs, matched_target_vertices_np ---
         return unique_vertex_idxs, matched_target_vertices_np
 
+    @staticmethod
     def filterDeformPairs(
-        self,
+        mesh: trimesh.Trimesh,
         source_vertex_idxs: np.ndarray,
         target_vertices: np.ndarray,
         max_deform_ratio: float = 0.05,
     ) -> Tuple[np.ndarray, np.ndarray]:
-        source_vertices = self.mesh.vertices[source_vertex_idxs]
+        source_vertices = mesh.vertices[source_vertex_idxs]
 
         deform_vectors = target_vertices - source_vertices
         deform_lengths = np.linalg.norm(deform_vectors, axis=1)
@@ -146,10 +114,12 @@ class MeshDeformer(object):
 
         return filtered_source_vertex_idxs, filtered_target_vertices
 
+    @staticmethod
     def deformMeshByNICP(
-        self,
+        mesh: trimesh.Trimesh,
         source_vertex_idxs: np.ndarray,
         target_vertices: np.ndarray,
+        device: str = 'cpu',
     ) -> trimesh.Trimesh:
         inner_iter = 50
         outer_iter = 200
@@ -176,16 +146,16 @@ class MeshDeformer(object):
             stiffness_weights,
             laplacian_weight,
             target_vertices_weight,
-            self.device,
+            device,
             save_result_folder_path,
             save_log_folder_path,
             render,
         )
 
         source_mesh = Mesh()
-        source_mesh.vertices = self.mesh.vertices
+        source_mesh.vertices = mesh.vertices
         source_mesh.normalize()
-        optimal_mapper.loadTemplateMesh(source_mesh.vertices, self.mesh.faces)
+        optimal_mapper.loadTemplateMesh(source_mesh.vertices, mesh.faces)
 
         target_mesh = Mesh()
         target_mesh.vertices = target_vertices
@@ -207,10 +177,12 @@ class MeshDeformer(object):
 
         return deformed_trimesh
 
+    @staticmethod
     def deformMeshByCage(
-        self,
+        mesh: trimesh.Trimesh,
         source_vertex_idxs: np.ndarray,
         target_vertices: np.ndarray,
+        device: str = 'cpu',
     ) -> trimesh.Trimesh:
         voxel_size = 1.0 / 64
         padding = 0.1
@@ -219,9 +191,9 @@ class MeshDeformer(object):
         steps = 1000
         dtype = torch.float32
 
-        vertices = toTensor(self.mesh.vertices, dtype, self.device)
+        vertices = toTensor(mesh.vertices, dtype, device)
 
-        cage_deformer = CageDeformer(dtype, self.device)
+        cage_deformer = CageDeformer(dtype, device)
 
         deformed_vertices = cage_deformer.deformPoints(
             vertices, source_vertex_idxs, target_vertices,
@@ -230,19 +202,23 @@ class MeshDeformer(object):
 
         deformed_trimesh = trimesh.Trimesh(
             vertices=toNumpy(deformed_vertices, np.float64),
-            faces=self.mesh.faces,
+            faces=mesh.faces,
         )
 
         return deformed_trimesh
 
-    def matchMeshToImageFile(
-        self,
-        image_file_path: str,
+    @staticmethod
+    def matchMeshToImage(
+        image: np.ndarray,
+        mesh: trimesh.Trimesh,
+        detector: Detector,
         save_match_result_folder_path: str,
         max_deform_ratio: float = 0.05,
     ) -> Optional[trimesh.Trimesh]:
-        camera, render_dict, match_result = self.matchCameraToMeshImageFile(
-            image_file_path,
+        camera, render_dict, match_result = CameraMatcher.matchCameraToMeshImage(
+            image,
+            mesh,
+            detector,
             save_match_result_folder_path,
             iter_num=1,
         )
@@ -321,58 +297,3 @@ class MeshDeformer(object):
             cv2.imwrite(white_mask_path, white_mask_img)
 
         return deformed_mesh
-
-    def matchCameraToMeshImageFile(
-        self,
-        image_file_path: str,
-        save_match_result_folder_path: Optional[str],
-        iter_num: int = 1,
-    ) -> Tuple[Optional[Camera], Optional[dict], Optional[dict]]:
-        import pickle
-
-        # 定义保存路径
-        output_tmp_folder = "./output/tmp"
-        os.makedirs(output_tmp_folder, exist_ok=True)
-        import hashlib
-        def get_hash_id(*args):
-            s = ",".join([str(x) for x in args])
-            return hashlib.md5(s.encode()).hexdigest()
-        # 用于唯一标识保存的文件名
-        base_id = get_hash_id(image_file_path, save_match_result_folder_path)
-        camera_file = os.path.join(output_tmp_folder, f"{base_id}_camera.pkl")
-        render_dict_file = os.path.join(output_tmp_folder, f"{base_id}_render_dict.pkl")
-        match_result_file = os.path.join(output_tmp_folder, f"{base_id}_match_result.pkl")
-
-        # 检查文件是否已存在并可用
-        if os.path.exists(camera_file) and os.path.exists(render_dict_file) and os.path.exists(match_result_file):
-            try:
-                with open(camera_file, 'rb') as f:
-                    camera = pickle.load(f)
-                with open(render_dict_file, 'rb') as f:
-                    render_dict = pickle.load(f)
-                with open(match_result_file, 'rb') as f:
-                    match_result = pickle.load(f)
-
-                render_dict = toGPU(render_dict, camera.device)
-                match_result = toGPU(match_result, camera.device)
-                print("[INFO][MeshDeformer::matchMeshToImageFile] 读取已缓存的匹配结果。")
-
-                return camera, render_dict, match_result
-            except:
-                pass
-
-        camera, render_dict, match_result = self.camera_matcher.matchCameraToMeshImageFile(
-            image_file_path,
-            save_match_result_folder_path,
-            iter_num,
-        )
-        with open(camera_file, 'wb') as f:
-            pickle.dump(camera, f)
-        def tensor_dict_to_cpu(d):
-            return {k: (v.cpu() if hasattr(v,"cpu") else v) for k, v in d.items()}
-        with open(render_dict_file, 'wb') as f:
-            pickle.dump(tensor_dict_to_cpu(render_dict), f)
-        with open(match_result_file, 'wb') as f:
-            pickle.dump(tensor_dict_to_cpu(match_result), f)
-
-        return camera, render_dict, match_result
