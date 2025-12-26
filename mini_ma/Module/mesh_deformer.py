@@ -1,23 +1,14 @@
-import os
-import cv2
 import torch
 import trimesh
 import numpy as np
-from typing import Tuple, Optional
-
-from camera_control.Module.nvdiffrast_renderer import NVDiffRastRenderer
-
-from mini_ma.Module.camera_matcher import CameraMatcher
-from non_rigid_icp.Data.mesh import Mesh
-from non_rigid_icp.Module.optimal_mapper import OptimalMapper
+from typing import Tuple
 
 from cage_deform.Module.cage_deformer import CageDeformer
 
 from camera_control.Module.camera import Camera
-from camera_control.Module.nvdiffrast_renderer import NVDiffRastRenderer
 
-from mini_ma.Method.io import loadImage
 from mini_ma.Method.data import toNumpy, toTensor
+from mini_ma.Module.camera_matcher import CameraMatcher
 
 
 class MeshDeformer(object):
@@ -35,7 +26,7 @@ class MeshDeformer(object):
         返回source mesh顶点去重后的索引 unique_vertex_idxs，以及每个source vertex对应的target空间坐标。
         """
         matched_uv, matched_triangle_idxs = CameraMatcher.extractMatchedUVTriangle(
-            render_dict, match_result, camera.device)
+            render_dict, match_result)
 
         # 获取所有匹配三角面的顶点索引 (N, 3)
         matched_face_vertex_idxs = mesh.faces[matched_triangle_idxs]  # (N, 3)
@@ -115,69 +106,6 @@ class MeshDeformer(object):
         return filtered_source_vertex_idxs, filtered_target_vertices
 
     @staticmethod
-    def deformMeshByNICP(
-        mesh: trimesh.Trimesh,
-        source_vertex_idxs: np.ndarray,
-        target_vertices: np.ndarray,
-        device: str = 'cpu',
-    ) -> trimesh.Trimesh:
-        inner_iter = 50
-        outer_iter = 200
-        milestones = np.arange(10, outer_iter, 4)
-        masked_dist_thresh = 0.04
-        masked_dist_thresh = float("inf")
-        masked_dist_weight = 1.0
-        stiffness_weights = 64 * 0.8 ** np.arange(milestones.shape[0] + 1)
-        laplacian_weight = 1.0
-        target_vertices_weight = 1.0
-        save_result_folder_path = "auto"
-        save_log_folder_path = "auto"
-        render = False
-
-        print("milestones:", milestones)
-        print("stiffness_weights:", stiffness_weights)
-
-        optimal_mapper = OptimalMapper(
-            inner_iter,
-            outer_iter,
-            milestones,
-            masked_dist_thresh,
-            masked_dist_weight,
-            stiffness_weights,
-            laplacian_weight,
-            target_vertices_weight,
-            device,
-            save_result_folder_path,
-            save_log_folder_path,
-            render,
-        )
-
-        source_mesh = Mesh()
-        source_mesh.vertices = mesh.vertices
-        source_mesh.normalize()
-        optimal_mapper.loadTemplateMesh(source_mesh.vertices, mesh.faces)
-
-        target_mesh = Mesh()
-        target_mesh.vertices = target_vertices
-        target_mesh.transform(source_mesh.norm_center, source_mesh.norm_scale, is_inverse=False)
-        optimal_mapper.addTargetVerticesConstraint(source_vertex_idxs, target_mesh.vertices)
-
-        optimal_mapper.map()
-
-        deformed_mesh = optimal_mapper.toDeformedTemplateMesh()
-
-        deformed_mesh.transform(
-            source_mesh.norm_center, source_mesh.norm_scale, is_inverse=True
-        )
-
-        deformed_trimesh = trimesh.Trimesh(
-            vertices=deformed_mesh.vertices,
-            faces=deformed_mesh.triangles,
-        )
-
-        return deformed_trimesh
-
-    @staticmethod
     def deformMeshByCage(
         mesh: trimesh.Trimesh,
         source_vertex_idxs: np.ndarray,
@@ -206,94 +134,3 @@ class MeshDeformer(object):
         )
 
         return deformed_trimesh
-
-    @staticmethod
-    def matchMeshToImage(
-        image: np.ndarray,
-        mesh: trimesh.Trimesh,
-        detector: Detector,
-        save_match_result_folder_path: str,
-        max_deform_ratio: float = 0.05,
-    ) -> Optional[trimesh.Trimesh]:
-        camera, render_dict, match_result = CameraMatcher.matchCameraToMeshImage(
-            image,
-            mesh,
-            detector,
-            save_match_result_folder_path,
-            iter_num=1,
-        )
-
-        if camera is None or render_dict is None or match_result is None:
-            print('[ERROR][MeshDeformer::matchMeshToImageFile]')
-            print('\t matchCamera failed!')
-            return None
-
-        source_vertex_idxs, target_vertices = self.searchDeformPairs(camera, render_dict, match_result)
-
-        filtered_source_vertex_idxs, filtered_target_vertices = self.filterDeformPairs(
-            source_vertex_idxs, target_vertices, max_deform_ratio)
-
-        deformed_mesh = self.deformMeshByCage(filtered_source_vertex_idxs, filtered_target_vertices)
-
-        # 保存为PLY点云文件
-        # 确保保存文件夹存在
-        if save_match_result_folder_path is not None:
-            os.makedirs(save_match_result_folder_path, exist_ok=True)
-
-            source_pcd_path = save_match_result_folder_path + 'matched_source_vertices.ply'
-            target_pcd_path = save_match_result_folder_path + 'matched_target_vertices.ply'
-            deformed_mesh_path = save_match_result_folder_path + 'deformed_mesh.ply'
-            deformed_mesh_iou_image_path = save_match_result_folder_path + 'deformed_iou.png'
-
-            source_pcd = trimesh.PointCloud(vertices=self.mesh.vertices[filtered_source_vertex_idxs])
-            target_pcd = trimesh.PointCloud(vertices=filtered_target_vertices)
-
-            source_pcd.export(source_pcd_path)
-            target_pcd.export(target_pcd_path)
-
-            deformed_mesh.export(deformed_mesh_path)
-
-            nvdiffrast_renderer = NVDiffRastRenderer(deformed_mesh_path, [178, 178, 178])
-
-            render_dict = nvdiffrast_renderer.renderImage(
-                camera,
-                light_direction=[1, 1, 1],
-            )
-
-            image = loadImage(image_file_path)
-            iou_vis = self.camera_matcher.renderIoU(image, render_dict)
-            cv2.imwrite(deformed_mesh_iou_image_path, iou_vis)
-
-            # HxWx4, u right, v down
-            rasterize_output = render_dict['rasterize_output']
-
-            # 计算mesh渲染出来的像素mask
-            mesh_mask = rasterize_output[..., 3] > 0  # [H, W] bool
-
-            # RGB阈值
-            white_thr = int(0.93 * 255)   # 可以调
-            if image.ndim == 2 or (image.ndim == 3 and image.shape[2] == 1):
-                # 灰度图情况
-                white_mask = image < white_thr
-            elif image.ndim == 3 and image.shape[2] >= 3:
-                # 彩色或有alpha通道的情况
-                white_mask = np.all(image[..., :3] < white_thr, axis=-1)
-            else:
-                raise ValueError(f"Unexpected image shape: {image.shape}")
-
-            mesh_mask_np = mesh_mask.cpu().numpy()
-
-            # 保存mask为图片
-            # HxW单通道mask保存为png需转换为HxWx1, 否则有些cv2读取为三通道错误
-            mesh_mask_img = (mesh_mask_np.astype(np.uint8) * 255)
-            mesh_mask_img = mesh_mask_img[..., None]  # [H,W,1]
-            white_mask_img = (white_mask.astype(np.uint8) * 255)
-            white_mask_img = white_mask_img[..., None]  # [H,W,1]
-
-            mesh_mask_path = save_match_result_folder_path + 'mesh_mask.png'
-            white_mask_path = save_match_result_folder_path + 'white_mask.png'
-
-            cv2.imwrite(mesh_mask_path, mesh_mask_img)
-            cv2.imwrite(white_mask_path, white_mask_img)
-
-        return deformed_mesh

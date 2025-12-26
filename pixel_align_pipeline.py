@@ -1,7 +1,6 @@
 import sys
 
 sys.path.append('../camera-control')
-sys.path.append('../non-rigid-icp')
 sys.path.append('../cage-deform')
 
 import os
@@ -26,6 +25,7 @@ if __name__ == '__main__':
     mesh_color = [178, 178, 178]
     max_deform_ratio = 0.05
     save_match_result_folder_path = home + '/chLi/Dataset/MM/Match/people_1/minima_mesh/'
+    cache_id = 'people_1'
 
     detector = Detector(
         method='roma',
@@ -35,24 +35,22 @@ if __name__ == '__main__':
 
     # HxWx3
     image = loadImage(image_file_path)
-    assert image
+    assert image is not None
 
     mesh = loadMeshFile(mesh_file_path)
-    assert mesh
+    assert mesh is not None
 
-    camera, render_dict, match_result = CameraMatcher.matchCameraToMeshImage(
+    camera, render_dict, match_result = CameraMatcher.matchCameraToMeshImageWithCache(
         image,
         mesh,
         detector,
         save_match_result_folder_path,
         iter_num=1,
+        cache_id=cache_id,
     )
-    assert camera
-    assert render_dict
-    assert match_result
-
-    matched_uv, matched_triangle_idxs = CameraMatcher.extractMatchedUVTriangle(
-        render_dict, match_result, device)
+    assert camera is not None
+    assert render_dict is not None
+    assert match_result is not None
 
     source_vertex_idxs, target_vertices = MeshDeformer.searchDeformPairs(
         mesh, camera, render_dict, match_result)
@@ -80,9 +78,8 @@ if __name__ == '__main__':
 
         deformed_mesh.export(deformed_mesh_path)
 
-        nvdiffrast_renderer = NVDiffRastRenderer(deformed_mesh_path, [178, 178, 178])
-
-        render_dict = nvdiffrast_renderer.renderImage(
+        render_dict = NVDiffRastRenderer.renderImage(
+            deformed_mesh,
             camera,
             light_direction=[1, 1, 1],
         )

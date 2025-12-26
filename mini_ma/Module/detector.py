@@ -4,7 +4,6 @@ import torch
 import numpy as np
 import matplotlib
 
-from mini_ma.Method.data import toGrayImage
 matplotlib.use('Agg')  # 使用非交互式后端
 import matplotlib.pyplot as plt
 import matplotlib.cm as cm
@@ -12,6 +11,7 @@ from typing import Optional, Union, Dict, Any
 
 from mini_ma.Model.loader import load_model
 from mini_ma.Method.io import loadImage
+from mini_ma.Method.data import toGrayImage, toRGBImage
 from mini_ma.Method.plotting import make_matching_figure
 
 
@@ -150,11 +150,11 @@ class Detector(object):
             如果失败返回 None
         """
         if self.is_gray:
-            image1 = toGrayImage(iamge1)
-            image2 = toGrayImage(iamge2)
+            image1 = toGrayImage(image1)
+            image2 = toGrayImage(image2)
         else:
-            image1 = toRGBImage(iamge1)
-            image2 = toRGBImage(iamge2)
+            image1 = toRGBImage(image1)
+            image2 = toRGBImage(image2)
 
         result = self.matcher(
             image1, image2,

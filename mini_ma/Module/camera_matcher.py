@@ -21,14 +21,16 @@ class CameraMatcher(object):
     def extractMatchedUVTriangle(
         render_dict: dict,
         match_result: dict,
-        device: str = 'cpu',
     ) -> Tuple[torch.Tensor, np.ndarray]:
-        # [W, H]
-        render_image_pts = torch.from_numpy(
-            np.round(match_result['mkpts1'])).to(dtype=torch.int32, device=device)
+        dtype = render_dict['rasterize_output'].dtype
+        device = render_dict['rasterize_output'].device
 
         # HxWx4, u right, v down
         rasterize_output = render_dict['rasterize_output']
+
+        # [W, H]
+        render_image_pts = torch.from_numpy(
+            np.round(match_result['mkpts1'])).to(dtype=torch.int32, device=device)
 
         height, width = rasterize_output.shape[:2]
 
@@ -42,8 +44,8 @@ class CameraMatcher(object):
 
         matched_triangle_idxs = toNumpy(matched_mesh_data[on_mesh_idxs, 3], np.int32)
 
-        image_uv = toTensor(match_result['mkpts0'], torch.float32, device) / torch.tensor(
-            [width, height], dtype=torch.float32, device=device)
+        image_uv = toTensor(match_result['mkpts0'], dtype, device) / torch.tensor(
+            [width, height], dtype=dtype, device=device)
         matched_uv = image_uv[on_mesh_idxs]
 
         matched_uv[:, 1] = 1.0 - matched_uv[:, 1]
@@ -55,8 +57,9 @@ class CameraMatcher(object):
         mesh: trimesh.Trimesh,
         render_dict: dict,
         match_result: dict,
-        device: str = 'cpu',
     ) -> Camera:
+        device = render_dict['rasterize_output'].device
+
         height, width = render_dict['image'].shape[:2]
 
         matched_uv, matched_triangle_idxs = CameraMatcher.extractMatchedUVTriangle(
