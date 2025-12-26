@@ -3,6 +3,8 @@ import cv2
 import torch
 import numpy as np
 import matplotlib
+
+from mini_ma.Method.data import toGrayImage
 matplotlib.use('Agg')  # 使用非交互式后端
 import matplotlib.pyplot as plt
 import matplotlib.cm as cm
@@ -11,6 +13,7 @@ from typing import Optional, Union, Dict, Any
 from mini_ma.Model.loader import load_model
 from mini_ma.Method.io import loadImage
 from mini_ma.Method.plotting import make_matching_figure
+
 
 
 class Detector(object):
@@ -59,19 +62,23 @@ class Detector(object):
                 self.args.fine_threshold = 0.1
             if self.args.ckpt is None:
                 self.args.ckpt = "./weights/weights_xoftr_640.ckpt"
+            self.is_gray = True
         elif method == "loftr":
             if self.args.thr is None:
                 self.args.thr = 0.2
             if self.args.ckpt is None:
                 self.args.ckpt = "./weights/minima_loftr.ckpt"
+            self.is_gray = True
         elif method == "sp_lg":
             if self.args.ckpt is None:
                 self.args.ckpt = "./weights/minima_lightglue.pth"
+            self.is_gray = True
         elif method == "roma":
             if self.args.ckpt2 is None:
                 self.args.ckpt2 = "large"
             if self.args.ckpt is None:
                 self.args.ckpt = './weights/minima_roma.pth'
+            self.is_gray = False
         else:
             raise ValueError(f"Unknown method: {method}. Supported methods: 'xoftr', 'loftr', 'roma', 'sp_lg'")
 
@@ -142,6 +149,13 @@ class Detector(object):
             - match_time: 匹配耗时
             如果失败返回 None
         """
+        if self.is_gray:
+            image1 = toGrayImage(iamge1)
+            image2 = toGrayImage(iamge2)
+        else:
+            image1 = toRGBImage(iamge1)
+            image2 = toRGBImage(iamge2)
+
         result = self.matcher(
             image1, image2,
             K0=K0, K1=K1,
