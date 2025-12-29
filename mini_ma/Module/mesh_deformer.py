@@ -2,6 +2,7 @@ import torch
 import trimesh
 import numpy as np
 from typing import Tuple
+from copy import deepcopy
 
 from cage_deform.Module.cage_deformer import CageDeformer
 
@@ -127,9 +128,7 @@ class MeshDeformer(object):
             voxel_size, padding, lr, lambda_reg, steps,
         )
 
-        deformed_trimesh = trimesh.Trimesh(
-            vertices=toNumpy(deformed_vertices, np.float64),
-            faces=mesh.faces,
-        )
+        deformed_trimesh = deepcopy(mesh)
+        deformed_trimesh.vertices = toNumpy(deformed_vertices, np.float32)
 
         return deformed_trimesh

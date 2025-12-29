@@ -35,17 +35,21 @@ mesh_image_pair_dict = {
         home + '/chLi/Dataset/MM/Match/longren/longren.glb',
         home + '/chLi/Dataset/MM/Match/longren/longren.png',
     ],
+    'chair': [
+        home + '/chLi/Dataset/MM/Match/chair/chair.glb',
+        home + '/chLi/Dataset/MM/Match/chair/chair.png',
+    ],
 }
 
 if __name__ == '__main__':
-    mesh_image_pair_id = 'longren'
+    mesh_image_pair_id = 'chair'
 
     model_file_path = home + '/chLi/Model/MINIMA/minima_roma.pth'
     mesh_file_path, image_file_path = mesh_image_pair_dict[mesh_image_pair_id]
     device = 'cuda:7'
     mesh_color = [178, 178, 178]
     max_deform_ratio = 0.05
-    voxel_size = 1.0 / 64
+    voxel_size = 1.0 / 128
     padding = 0.1
     lr = 1e-2
     lambda_reg = 1e4
@@ -55,11 +59,13 @@ if __name__ == '__main__':
     save_match_result_folder_path = home + '/chLi/Dataset/MM/Match/' + mesh_image_pair_id + '/minima_mesh/'
 
     detector = None
-    detector = Detector(
-        method='roma',
-        model_file_path=model_file_path,
-        device=device,
-    )
+    cache_folder_path = './output/tmp/' + mesh_image_pair_id + '/'
+    if not os.path.exists(cache_folder_path):
+        detector = Detector(
+            method='roma',
+            model_file_path=model_file_path,
+            device=device,
+        )
 
     # HxWx3
     image = loadImage(image_file_path)
@@ -74,6 +80,8 @@ if __name__ == '__main__':
         detector,
         save_match_result_folder_path,
         iter_num=1,
+        is_gray=False,
+        paint_color=[178, 178, 178],
         cache_id=mesh_image_pair_id,
     )
     assert camera is not None
@@ -111,7 +119,10 @@ if __name__ == '__main__':
             deformed_mesh,
             camera,
             light_direction=[1, 1, 1],
+            is_gray=False,
+            paint_color=None,
         )
+        deformed_mesh_rgb_image = render_dict['image']
 
         iou_vis = CameraMatcher.renderIoU(image, render_dict)
         cv2.imwrite(deformed_mesh_iou_image_path, iou_vis)
@@ -144,6 +155,8 @@ if __name__ == '__main__':
 
         mesh_mask_path = save_match_result_folder_path + 'mesh_mask.png'
         white_mask_path = save_match_result_folder_path + 'white_mask.png'
+        deformed_mesh_rgb_path = save_match_result_folder_path + 'deformed_mesh_rgb.png'
 
         cv2.imwrite(mesh_mask_path, mesh_mask_img)
         cv2.imwrite(white_mask_path, white_mask_img)
+        cv2.imwrite(deformed_mesh_rgb_path, deformed_mesh_rgb_image)

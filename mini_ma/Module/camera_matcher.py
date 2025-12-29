@@ -114,6 +114,8 @@ class CameraMatcher(object):
         detector: Detector,
         save_match_result_folder_path: Optional[str],
         iter_num: int = 1,
+        is_gray: bool=False,
+        paint_color: Optional[list]=None,
     ) -> Tuple[Optional[Camera], Optional[dict], Optional[dict]]:
         render = save_match_result_folder_path is not None
 
@@ -132,6 +134,8 @@ class CameraMatcher(object):
             mesh,
             init_camera,
             light_direction=light_direction,
+            is_gray=is_gray,
+            paint_color=paint_color,
         )
 
         match_result = detector.detect(image, render_dict['image'])
@@ -163,6 +167,8 @@ class CameraMatcher(object):
                 mesh,
                 estimated_camera,
                 light_direction=light_direction,
+                is_gray=is_gray,
+                paint_color=paint_color,
             )
 
             match_result = detector.detect(image, render_dict['image'])
@@ -201,16 +207,18 @@ class CameraMatcher(object):
         detector: Detector,
         save_match_result_folder_path: Optional[str],
         iter_num: int = 1,
+        is_gray: bool=False,
+        paint_color: Optional[list]=None,
         cache_id: str = 'replace',
     ) -> Tuple[Optional[Camera], Optional[dict], Optional[dict]]:
         import pickle
 
         # 定义保存路径
-        output_tmp_folder = "./output/tmp/"
+        output_tmp_folder = "./output/tmp/" + cache_id + '/'
         os.makedirs(output_tmp_folder, exist_ok=True)
-        camera_file = output_tmp_folder + cache_id + f"_camera.pkl"
-        render_dict_file = output_tmp_folder + cache_id + "_render_dict.pkl"
-        match_result_file = output_tmp_folder + cache_id + "_match_result.pkl"
+        camera_file = output_tmp_folder + "camera.pkl"
+        render_dict_file = output_tmp_folder + "render_dict.pkl"
+        match_result_file = output_tmp_folder + "match_result.pkl"
 
         # 检查文件是否已存在并可用
         if os.path.exists(camera_file) and os.path.exists(render_dict_file) and os.path.exists(match_result_file):
@@ -236,6 +244,8 @@ class CameraMatcher(object):
             detector,
             save_match_result_folder_path,
             iter_num,
+            is_gray,
+            paint_color,
         )
         with open(camera_file, 'wb') as f:
             pickle.dump(camera, f)
