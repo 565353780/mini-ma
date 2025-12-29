@@ -42,12 +42,14 @@ mesh_image_pair_dict = {
 }
 
 if __name__ == '__main__':
-    mesh_image_pair_id = 'chair'
+    mesh_image_pair_id = 'people_2'
 
-    model_file_path = home + '/chLi/Model/MINIMA/minima_roma.pth'
+    model_file_path = home + '/chLi/Model/MINIMA/minima_lightglue.pth'
+    method = 'sp_lg'
     mesh_file_path, image_file_path = mesh_image_pair_dict[mesh_image_pair_id]
     device = 'cuda:7'
     mesh_color = [178, 178, 178]
+    iter_num = 10
     max_deform_ratio = 0.05
     voxel_size = 1.0 / 128
     padding = 0.1
@@ -59,10 +61,10 @@ if __name__ == '__main__':
     save_match_result_folder_path = home + '/chLi/Dataset/MM/Match/' + mesh_image_pair_id + '/minima_mesh/'
 
     detector = None
-    cache_folder_path = './output/tmp/' + mesh_image_pair_id + '/'
+    cache_folder_path = './output/tmp/' + mesh_image_pair_id + '_' + method + '/'
     if not os.path.exists(cache_folder_path):
         detector = Detector(
-            method='roma',
+            method=method,
             model_file_path=model_file_path,
             device=device,
         )
@@ -79,10 +81,11 @@ if __name__ == '__main__':
         mesh,
         detector,
         save_match_result_folder_path,
-        iter_num=1,
+        iter_num=iter_num,
         is_gray=False,
         paint_color=[178, 178, 178],
-        cache_id=mesh_image_pair_id,
+        cache_id=None,
+        # cache_id=mesh_image_pair_id,
     )
     assert camera is not None
     assert render_dict is not None

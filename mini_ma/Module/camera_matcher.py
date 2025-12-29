@@ -209,8 +209,19 @@ class CameraMatcher(object):
         iter_num: int = 1,
         is_gray: bool=False,
         paint_color: Optional[list]=None,
-        cache_id: str = 'replace',
+        cache_id: Optional[str]=None,
     ) -> Tuple[Optional[Camera], Optional[dict], Optional[dict]]:
+        if cache_id is None:
+            return CameraMatcher.matchCameraToMeshImage(
+                image,
+                mesh,
+                detector,
+                save_match_result_folder_path,
+                iter_num,
+                is_gray,
+                paint_color,
+            )
+
         import pickle
 
         # 定义保存路径
