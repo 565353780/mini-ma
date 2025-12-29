@@ -110,15 +110,14 @@ class MeshDeformer(object):
         mesh: trimesh.Trimesh,
         source_vertex_idxs: np.ndarray,
         target_vertices: np.ndarray,
+        voxel_size = 1.0 / 64,
+        padding = 0.1,
+        lr = 1e-2,
+        lambda_reg = 1e4,
+        steps = 1000,
+        dtype = torch.float32,
         device: str = 'cpu',
     ) -> trimesh.Trimesh:
-        voxel_size = 1.0 / 64
-        padding = 0.1
-        lr = 1e-2
-        lambda_reg = 1e4
-        steps = 1000
-        dtype = torch.float32
-
         vertices = toTensor(mesh.vertices, dtype, device)
 
         cage_deformer = CageDeformer(dtype, device)

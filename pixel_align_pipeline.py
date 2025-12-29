@@ -5,6 +5,7 @@ sys.path.append('../cage-deform')
 
 import os
 import cv2
+import torch
 import trimesh
 import numpy as np
 
@@ -16,17 +17,44 @@ from mini_ma.Module.camera_matcher import CameraMatcher
 from mini_ma.Module.mesh_deformer import MeshDeformer
 
 
+home = os.environ['HOME']
+mesh_image_pair_dict = {
+    'people_1': [
+        home + '/chLi/Dataset/MM/Match/1024result/c6c113443a8ebb331ed307f33b1385c31a7d0c2fa8ed97b511511048e9e1a4afv1_5_-1_stagetwo_1024.glb',
+        home + '/chLi/Dataset/MM/Match/inputimage/c6c113443a8ebb331ed307f33b1385c31a7d0c2fa8ed97b511511048e9e1a4af.jpg',
+    ],
+    'people_2': [
+        home + '/chLi/Dataset/MM/Match/1024result/download_fullbody_manv1_5_-1_stagetwo_1024.glb',
+        home + '/chLi/Dataset/MM/Match/inputimage/download_fullbody_man.png',
+    ],
+    'nezha': [
+        home + '/chLi/Dataset/MM/Match/nezha/nezha.glb',
+        home + '/chLi/Dataset/MM/Match/nezha/nezha.png',
+    ],
+    'longren': [
+        home + '/chLi/Dataset/MM/Match/longren/longren.glb',
+        home + '/chLi/Dataset/MM/Match/longren/longren.png',
+    ],
+}
+
 if __name__ == '__main__':
-    home = os.environ['HOME']
-    mesh_file_path = home + '/chLi/Dataset/MM/Match/1024result/c6c113443a8ebb331ed307f33b1385c31a7d0c2fa8ed97b511511048e9e1a4afv1_5_-1_stagetwo_1024.glb'
+    mesh_image_pair_id = 'longren'
+
     model_file_path = home + '/chLi/Model/MINIMA/minima_roma.pth'
-    image_file_path = home + '/chLi/Dataset/MM/Match/inputimage/c6c113443a8ebb331ed307f33b1385c31a7d0c2fa8ed97b511511048e9e1a4af.jpg'
+    mesh_file_path, image_file_path = mesh_image_pair_dict[mesh_image_pair_id]
     device = 'cuda:7'
     mesh_color = [178, 178, 178]
     max_deform_ratio = 0.05
-    save_match_result_folder_path = home + '/chLi/Dataset/MM/Match/people_1/minima_mesh/'
-    cache_id = 'people_1'
+    voxel_size = 1.0 / 64
+    padding = 0.1
+    lr = 1e-2
+    lambda_reg = 1e4
+    steps = 1000
+    dtype = torch.float32
 
+    save_match_result_folder_path = home + '/chLi/Dataset/MM/Match/' + mesh_image_pair_id + '/minima_mesh/'
+
+    detector = None
     detector = Detector(
         method='roma',
         model_file_path=model_file_path,
@@ -46,7 +74,7 @@ if __name__ == '__main__':
         detector,
         save_match_result_folder_path,
         iter_num=1,
-        cache_id=cache_id,
+        cache_id=mesh_image_pair_id,
     )
     assert camera is not None
     assert render_dict is not None
@@ -59,7 +87,8 @@ if __name__ == '__main__':
         mesh, source_vertex_idxs, target_vertices, max_deform_ratio)
 
     deformed_mesh = MeshDeformer.deformMeshByCage(
-        mesh, filtered_source_vertex_idxs, filtered_target_vertices, device)
+        mesh, filtered_source_vertex_idxs, filtered_target_vertices, 
+        voxel_size, padding, lr, lambda_reg, steps, dtype, device)
 
     # 保存为PLY点云文件
     if save_match_result_folder_path is not None:

@@ -120,6 +120,7 @@ class Detector(object):
         print(f'\t Successfully loaded {self.method} model from: {model_file_path}')
         return True
 
+    @torch.no_grad()
     def detect(
         self,
         image1: np.ndarray,
@@ -163,6 +164,7 @@ class Detector(object):
         )
         return result
 
+    @torch.no_grad()
     def detectImageFilePair(
         self,
         image1_file_path: str,
@@ -212,6 +214,7 @@ class Detector(object):
 
         return self.detect(image1_data, image2_data, K0=K0, K1=K1, dist0=dist0, dist1=dist1)
 
+    @torch.no_grad()
     def renderMatchResult(
         self,
         match_result: Dict[str, Any],
