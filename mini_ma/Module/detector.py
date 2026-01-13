@@ -277,7 +277,7 @@ class Detector(object):
             inliers = None
             ret_H = None
 
-        print(f"Number of inliers: {inliers.sum() if inliers is not None else 0}")
+        # print(f"Number of inliers: {inliers.sum() if inliers is not None else 0}")
 
         if show_inliers_only:
             # 使用 save_matching_figure 的逻辑：只显示内点

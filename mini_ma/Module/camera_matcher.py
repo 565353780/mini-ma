@@ -281,7 +281,7 @@ class CameraMatcher(object):
         mesh_mask = rasterize_output[..., 3] > 0  # [H, W] bool
 
         # RGB阈值
-        white_thr = int(0.93 * 255)   # 可以调
+        white_thr = int(0.98 * 255)   # 可以调
         if image.ndim == 2 or (image.ndim == 3 and image.shape[2] == 1):
             # 灰度图情况
             white_mask = image < white_thr
