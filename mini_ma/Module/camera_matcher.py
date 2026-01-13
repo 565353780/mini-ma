@@ -8,7 +8,7 @@ from typing import Tuple, Optional
 from camera_control.Module.camera import Camera
 from camera_control.Module.nvdiffrast_renderer import NVDiffRastRenderer
 
-from mini_ma.Method.data import toNumpy, toTensor, toGPU
+from mini_ma.Method.data import toTensor, toGPU
 from mini_ma.Method.path import createFileFolder
 from mini_ma.Module.detector import Detector
 
@@ -21,7 +21,7 @@ class CameraMatcher(object):
     def extractMatchedUVTriangle(
         render_dict: dict,
         match_result: dict,
-    ) -> Tuple[torch.Tensor, np.ndarray]:
+    ) -> Tuple[torch.Tensor, torch.Tensor]:
         dtype = render_dict['rasterize_output'].dtype
         device = render_dict['rasterize_output'].device
 
@@ -42,7 +42,7 @@ class CameraMatcher(object):
         matched_mesh_data = rasterize_output[safe_pts[:, 1], safe_pts[:, 0]]
         on_mesh_idxs = (matched_mesh_data[:, 3] > 0).nonzero(as_tuple=False).flatten()
 
-        matched_triangle_idxs = toNumpy(matched_mesh_data[on_mesh_idxs, 3], np.int32)
+        matched_triangle_idxs = matched_mesh_data[on_mesh_idxs, 3]
 
         image_uv = toTensor(match_result['mkpts0'], dtype, device) / torch.tensor(
             [width, height], dtype=dtype, device=device)

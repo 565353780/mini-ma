@@ -20,7 +20,7 @@ class MeshXYZMatcher(object):
         rgbd_camera: RGBDCamera,
         render_dict: dict,
         match_result: dict,
-    ) -> Tuple[torch.Tensor, np.ndarray, torch.Tensor]:
+    ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         matched_uv, matched_triangle_idxs = CameraMatcher.extractMatchedUVTriangle(
             render_dict=render_dict,
             match_result=match_result,
@@ -35,7 +35,7 @@ class MeshXYZMatcher(object):
         mesh: trimesh.Trimesh,
         rgbd_camera: RGBDCamera,
         detector: Detector,
-    ) -> Tuple[Optional[torch.Tensor], Optional[np.ndarray], Optional[torch.Tensor]]:
+    ) -> Tuple[Optional[torch.Tensor], Optional[torch.Tensor], Optional[torch.Tensor]]:
         render_dict = NVDiffRastRenderer.renderNormal(
             mesh,
             rgbd_camera,
