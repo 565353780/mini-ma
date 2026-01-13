@@ -42,7 +42,7 @@ class CameraMatcher(object):
         matched_mesh_data = rasterize_output[safe_pts[:, 1], safe_pts[:, 0]]
         on_mesh_idxs = (matched_mesh_data[:, 3] > 0).nonzero(as_tuple=False).flatten()
 
-        matched_triangle_idxs = matched_mesh_data[on_mesh_idxs, 3]
+        matched_triangle_idxs = matched_mesh_data[on_mesh_idxs, 3].to(torch.int32)
 
         image_uv = toTensor(match_result['mkpts0'], dtype, device) / torch.tensor(
             [width, height], dtype=dtype, device=device)
