@@ -1,3 +1,4 @@
+from mini_ma.Method.data import toNumpy
 import torch
 import trimesh
 import numpy as np
@@ -19,38 +20,36 @@ class MeshXYZMatcher(object):
         rgbd_camera: RGBDCamera,
         render_dict: dict,
         match_result: dict,
-    ) -> Tuple[torch.Tensor, np.ndarray]:
+    ) -> Tuple[torch.Tensor, np.ndarray, torch.Tensor]:
         matched_uv, matched_triangle_idxs = CameraMatcher.extractMatchedUVTriangle(
             render_dict=render_dict,
             match_result=match_result,
         )
 
-        matched_points = rgbd_camera.queryUVPoints(matched_uv)
+        matched_points, valid_mask = rgbd_camera.queryUVPoints(matched_uv)
 
-        return matched_points, matched_triangle_idxs
+        return matched_points, matched_triangle_idxs, valid_mask
 
     @staticmethod
     def queryTrianglePoints(
         mesh: trimesh.Trimesh,
         rgbd_camera: RGBDCamera,
         detector: Detector,
-    ) -> Tuple[Optional[torch.Tensor], Optional[torch.Tensor]]:
+    ) -> Tuple[Optional[torch.Tensor], Optional[np.ndarray], Optional[torch.Tensor]]:
         render_dict = NVDiffRastRenderer.renderNormal(
             mesh,
             rgbd_camera,
             bg_color=[0, 0, 0],
         )
 
-        render_dict['image'] = render_dict['normal_camera']
+        normal_image_cv = toNumpy(render_dict['normal_camera'] * 255.0, np.uint8)[..., ::-1]
 
-        match_result = detector.detect(rgbd_camera.image, render_dict['image'])
+        match_result = detector.detect(rgbd_camera.image_cv, normal_image_cv)
 
         if match_result is None:
             print('[ERROR][MeshXYZMatcher::queryTrianglePoints]')
             print('\t matching pairs detect failed!')
-            return None, None
+            return None, None, None
 
-        matched_points, matched_triangle_idxs = MeshXYZMatcher.extractMatchedTrianglePoint(
+        return MeshXYZMatcher.extractMatchedTrianglePoint(
             rgbd_camera, render_dict, match_result)
-
-        return matched_points, matched_triangle_idxs
