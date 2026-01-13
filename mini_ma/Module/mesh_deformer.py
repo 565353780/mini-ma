@@ -4,7 +4,7 @@ import numpy as np
 from typing import Tuple
 from copy import deepcopy
 
-from cage_deform.Module.cage_deformer import CageDeformer
+from cage_deform.Module.bspline_deformer import BSplineDeformer
 
 from camera_control.Module.camera import Camera
 
@@ -98,23 +98,24 @@ class MeshDeformer(object):
         voxel_size = 1.0 / 64,
         padding = 0.1,
         lr = 1e-2,
-        lambda_reg = 1e4,
+        lambda_smooth: float = 1e3,
+        lambda_magnitude: float = 1.0,
         steps = 1000,
         dtype = torch.float32,
         device: str = 'cpu',
     ) -> trimesh.Trimesh:
         vertices = toTensor(mesh.vertices, dtype, device)
 
-        cage_deformer = CageDeformer(dtype, device)
+        bspline_deformer = BSplineDeformer(dtype, device)
 
-        cage_deformer.loadPoints(mesh.vertices, voxel_size, padding)
+        bspline_deformer.loadPoints(mesh.vertices, voxel_size, padding)
 
-        deformed_points = cage_deformer.deformPoints(
+        deformed_points = bspline_deformer.deformPoints(
             source_points, target_points,
-            lr, lambda_reg, steps,
+            lr, lambda_smooth, lambda_magnitude, steps,
         )
 
-        deformed_vertices = cage_deformer.queryPoints(vertices)
+        deformed_vertices = bspline_deformer.queryPoints(vertices)
 
         deformed_trimesh = deepcopy(mesh)
         deformed_trimesh.vertices = toNumpy(deformed_vertices, np.float32)
