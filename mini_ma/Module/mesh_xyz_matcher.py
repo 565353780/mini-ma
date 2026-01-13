@@ -20,22 +20,22 @@ class MeshXYZMatcher(object):
         rgbd_camera: RGBDCamera,
         render_dict: dict,
         match_result: dict,
-    ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+    ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
         matched_uv, matched_triangle_idxs = CameraMatcher.extractMatchedUVTriangle(
             render_dict=render_dict,
             match_result=match_result,
         )
 
-        matched_points, valid_mask = rgbd_camera.queryUVPoints(matched_uv)
+        matched_points, confs, valid_mask = rgbd_camera.queryUVPoints(matched_uv)
 
-        return matched_points, matched_triangle_idxs, valid_mask
+        return matched_points, matched_triangle_idxs, confs, valid_mask
 
     @staticmethod
     def queryTrianglePoints(
         mesh: trimesh.Trimesh,
         rgbd_camera: RGBDCamera,
         detector: Detector,
-    ) -> Tuple[Optional[torch.Tensor], Optional[torch.Tensor], Optional[torch.Tensor]]:
+    ) -> Tuple[Optional[torch.Tensor], Optional[torch.Tensor], Optional[torch.Tensor], Optional[torch.Tensor]]:
         render_dict = NVDiffRastRenderer.renderNormal(
             mesh,
             rgbd_camera,
@@ -49,7 +49,7 @@ class MeshXYZMatcher(object):
         if match_result is None:
             print('[ERROR][MeshXYZMatcher::queryTrianglePoints]')
             print('\t matching pairs detect failed!')
-            return None, None, None
+            return None, None, None, None
 
         return MeshXYZMatcher.extractMatchedTrianglePoint(
             rgbd_camera, render_dict, match_result)
