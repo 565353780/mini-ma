@@ -8,7 +8,7 @@ from typing import Tuple, Optional
 from camera_control.Module.camera import Camera
 from camera_control.Module.nvdiffrast_renderer import NVDiffRastRenderer
 
-from mini_ma.Method.data import toTensor, toGPU
+from mini_ma.Method.data import toNumpy, toTensor, toGPU
 from mini_ma.Method.path import createFileFolder
 from mini_ma.Module.detector import Detector
 
@@ -127,7 +127,6 @@ class CameraMatcher(object):
             device=detector.device,
         )
         init_camera.focusOnPoints(mesh.vertices)
-        light_direction = [1, 1, 1]
 
         render_dict = NVDiffRastRenderer.renderNormal(
             mesh,
@@ -135,7 +134,9 @@ class CameraMatcher(object):
             bg_color=[255, 255, 255],
         )
 
-        match_result = detector.detect(image, render_dict['normal_camera'])
+        normal_image = toNumpy(render_dict['normal_camera'][..., ::-1] * 255.0, np.uint8)
+
+        match_result = detector.detect(image, normal_image)
 
         if match_result is None:
             print('[ERROR][CameraMatcher::matchCameraToMeshImage]')
@@ -166,7 +167,9 @@ class CameraMatcher(object):
                 bg_color=[255, 255, 255],
             )
 
-            match_result = detector.detect(image, render_dict['image'])
+            normal_image = toNumpy(render_dict['normal_camera'][..., ::-1] * 255.0, np.uint8)
+
+            match_result = detector.detect(image, normal_image)
 
             if match_result is None:
                 print('[ERROR][CameraMatcher::matchMeshImagePairs]')
