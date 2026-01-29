@@ -8,7 +8,7 @@ from typing import Tuple, Optional
 from camera_control.Module.camera import Camera
 from camera_control.Module.nvdiffrast_renderer import NVDiffRastRenderer
 
-from mini_ma.Method.data import toNumpy, toTensor, toGPU
+from mini_ma.Method.data import toTensor, toGPU
 from mini_ma.Method.path import createFileFolder
 from mini_ma.Module.detector import Detector
 
@@ -61,12 +61,12 @@ class CameraMatcher(object):
     ) -> Camera:
         device = render_dict['rasterize_output'].device
 
-        height, width = render_dict['image'].shape[:2]
+        height, width = render_dict['image_cv'].shape[:2]
 
         matched_uv, matched_triangle_idxs = CameraMatcher.extractMatchedUVTriangle(
             render_dict, match_result)
 
-        triangle_vertices = mesh.vertices[mesh.faces[matched_triangle_idxs]]
+        triangle_vertices = mesh.vertices[mesh.faces[matched_triangle_idxs.cpu().numpy()]]
         matched_triangle_centers = triangle_vertices.mean(axis=1)
 
         estimated_camera = Camera.fromUVPoints(
@@ -134,7 +134,8 @@ class CameraMatcher(object):
             bg_color=[255, 255, 255],
         )
 
-        normal_image = toNumpy(render_dict['normal_camera'][..., ::-1] * 255.0, np.uint8)
+        normal_image = (render_dict['normal_camera'].cpu().numpy()[..., ::-1] * 255.0).astype(np.uint8)
+        render_dict['image_cv'] = normal_image
 
         match_result = detector.detect(image, normal_image)
 
@@ -167,7 +168,8 @@ class CameraMatcher(object):
                 bg_color=[255, 255, 255],
             )
 
-            normal_image = toNumpy(render_dict['normal_camera'][..., ::-1] * 255.0, np.uint8)
+            normal_image = (render_dict['normal_camera'].cpu().numpy()[..., ::-1] * 255.0).astype(np.uint8)
+            render_dict['image_cv'] = normal_image
 
             match_result = detector.detect(image, normal_image)
 
@@ -323,7 +325,7 @@ class CameraMatcher(object):
         img_vis = detector.renderMatchResult(
             match_result,
             image,
-            render_dict['image'],
+            render_dict['image_cv'],
         )
 
         iou_vis = CameraMatcher.renderIoU(image, render_dict)
