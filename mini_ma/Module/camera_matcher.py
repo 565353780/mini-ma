@@ -115,8 +115,6 @@ class CameraMatcher(object):
         detector: Detector,
         save_match_result_folder_path: Optional[str],
         iter_num: int = 1,
-        is_gray: bool=False,
-        paint_color: Optional[list]=None,
     ) -> Tuple[Optional[Camera], Optional[dict], Optional[dict]]:
         render = save_match_result_folder_path is not None
 
@@ -131,15 +129,13 @@ class CameraMatcher(object):
         init_camera.focusOnPoints(mesh.vertices)
         light_direction = [1, 1, 1]
 
-        render_dict = NVDiffRastRenderer.renderImage(
+        render_dict = NVDiffRastRenderer.renderNormal(
             mesh,
             init_camera,
-            light_direction=light_direction,
-            is_gray=is_gray,
-            paint_color=paint_color,
+            bg_color=[255, 255, 255],
         )
 
-        match_result = detector.detect(image, render_dict['image'])
+        match_result = detector.detect(image, render_dict['normal_camera'])
 
         if match_result is None:
             print('[ERROR][CameraMatcher::matchCameraToMeshImage]')
@@ -164,12 +160,10 @@ class CameraMatcher(object):
         for i in range(1, 1 + iter_num):
             estimated_camera = CameraMatcher.estimateCamera(mesh, render_dict, match_result)
 
-            render_dict = NVDiffRastRenderer.renderImage(
+            render_dict = NVDiffRastRenderer.renderNormal(
                 mesh,
                 estimated_camera,
-                light_direction=light_direction,
-                is_gray=is_gray,
-                paint_color=paint_color,
+                bg_color=[255, 255, 255],
             )
 
             match_result = detector.detect(image, render_dict['image'])
@@ -208,8 +202,6 @@ class CameraMatcher(object):
         detector: Detector,
         save_match_result_folder_path: Optional[str],
         iter_num: int = 1,
-        is_gray: bool=False,
-        paint_color: Optional[list]=None,
         cache_id: Optional[str]=None,
     ) -> Tuple[Optional[Camera], Optional[dict], Optional[dict]]:
         if cache_id is None:
@@ -219,8 +211,6 @@ class CameraMatcher(object):
                 detector,
                 save_match_result_folder_path,
                 iter_num,
-                is_gray,
-                paint_color,
             )
 
         import pickle
@@ -256,8 +246,6 @@ class CameraMatcher(object):
             detector,
             save_match_result_folder_path,
             iter_num,
-            is_gray,
-            paint_color,
         )
         with open(camera_file, 'wb') as f:
             pickle.dump(camera, f)
