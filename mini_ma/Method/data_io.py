@@ -1,10 +1,10 @@
-import time
-
 import cv2
-import numpy as np
+import time
 import torch
-# import torchvision.transforms as transforms
+import numpy as np
 import torch.nn.functional as F
+# import torchvision.transforms as transforms
+
 from torch import nn
 from yacs.config import CfgNode as CN
 
