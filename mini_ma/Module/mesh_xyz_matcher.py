@@ -44,7 +44,7 @@ class MeshXYZMatcher(object):
 
         normal_image_cv = toNumpy(render_dict['normal_camera'] * 255.0, np.uint8)[..., ::-1]
 
-        match_result = detector.detect(camera.image_cv, normal_image_cv)
+        match_result = detector.detect(camera.toImageCV(use_mask=False), normal_image_cv)
 
         if match_result is None:
             print('[ERROR][MeshXYZMatcher::queryTrianglePoints]')
