@@ -30,7 +30,14 @@ class DataIOWrapper(nn.Module):
         super().__init__()
 
         self.device = torch.device('cuda:{}'.format(0) if torch.cuda.is_available() else 'cpu')
-        torch.set_grad_enabled(False)
+        # NOTE: do NOT call ``torch.set_grad_enabled(False)`` here. That
+        # call is thread-local AND persistent, so constructing this
+        # wrapper from a worker thread (e.g. the web pipeline's
+        # ``mmrecon-worker``) would permanently disable autograd in
+        # that thread and break any later trainer (e.g. ``fit_fastgs``'s
+        # ``total_loss.backward()``). Gradient computation is disabled
+        # locally on the inference entry points via ``@torch.no_grad()``
+        # decorators below.
         self.model = model
         self.config = config
         self.img0_size = config['img0_resize']
@@ -79,6 +86,7 @@ class DataIOWrapper(nn.Module):
             img = torch.from_numpy(img).permute(2, 0, 1)[None].float() / 255.0
         return img, scale, mask, new_K, img_undistorted
 
+    @torch.no_grad()
     def from_cv_imgs(self, img0, img1, K0=None, K1=None, dist0=None, dist1=None):
         # print('self.padding', self.padding)
         img0_tensor, scale0, mask0, new_K0, img0_undistorted = self.preprocess_image(
@@ -105,6 +113,7 @@ class DataIOWrapper(nn.Module):
             data.update({'new_K1': new_K1, 'img1_undistorted': img1_undistorted})
         return data
 
+    @torch.no_grad()
     def from_paths(self, img0_pth, img1_pth, K0=None, K1=None, dist0=None, dist1=None, read_color=False):
 
         imread_flag = cv2.IMREAD_COLOR if read_color else cv2.IMREAD_GRAYSCALE
@@ -113,6 +122,7 @@ class DataIOWrapper(nn.Module):
         img1 = cv2.imread(img1_pth, imread_flag)
         return self.from_cv_imgs(img0, img1, K0=K0, K1=K1, dist0=dist0, dist1=dist1)
 
+    @torch.no_grad()
     def match_images(self, image0, image1, mask0, mask1):
         batch = {'image0': image0, 'image1': image1}
         if mask0 is not None:  # img_padding is True
