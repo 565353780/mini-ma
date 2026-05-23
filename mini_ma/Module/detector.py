@@ -26,6 +26,7 @@ class Detector(object):
         thr: Optional[float] = None,
         ckpt2: Optional[str] = None,
         device: Optional[str] = None,
+        is_offload_cpu: bool = False,
     ) -> None:
         """
         初始化检测器
@@ -41,6 +42,9 @@ class Detector(object):
         """
         self.method = method
         self.device = device or ('cuda' if torch.cuda.is_available() else 'cpu')
+        # offload 模式：matcher 子模型常驻 CPU，``detect()`` 推理窗口内才搬到
+        # ``self.device`` 并在 finally 卸载回 CPU；默认模式保持原版本 GPU 常驻。
+        self.is_offload_cpu = bool(is_offload_cpu)
         self.matcher = None
 
         # 创建参数对象
@@ -116,9 +120,72 @@ class Detector(object):
             use_path=False,
             test_orginal_megadepth=False,
         )
+
+        # offload 模式下，构造完成后立即把 matcher 子模型搬到 CPU；默认模式保持
+        # ``load_model`` 已搬到 ``self.device`` 的状态。
+        if self.is_offload_cpu:
+            self._offloadMatcherToCPU()
+
         print(f'[INFO][Detector::loadModel]')
         print(f'\t Successfully loaded {self.method} model from: {model_file_path}')
         return True
+
+    def _getInnerMatcher(self) -> Optional[torch.nn.Module]:
+        '''Return the underlying ``DataIOWrapper.model`` (nn.Module) if any.
+
+        ``self.matcher`` is the ``from_paths`` / ``from_cv_imgs`` bound method
+        produced by ``load_model``; its ``__self__`` is the ``DataIOWrapper``,
+        whose ``model`` attribute holds the real matcher network we need to
+        ferry between CPU and GPU.
+        '''
+        if self.matcher is None:
+            return None
+        wrapper = getattr(self.matcher, '__self__', None)
+        if wrapper is None:
+            return None
+        return getattr(wrapper, 'model', None)
+
+    def _setWrapperDevice(self, device: str) -> None:
+        '''Keep ``DataIOWrapper.device`` in sync with the actual model device.
+
+        ``preprocess_image`` in the ``DataIOWrapper`` family of files uses
+        ``self.device`` to decide where to allocate input tensors; if we move
+        the model without updating it, inputs land on the wrong device.
+        '''
+        if self.matcher is None:
+            return
+        wrapper = getattr(self.matcher, '__self__', None)
+        if wrapper is None:
+            return
+        try:
+            wrapper.device = torch.device(device)
+        except Exception:
+            wrapper.device = device
+
+    def _moveMatcherToDevice(self) -> None:
+        '''offload 模式下推理前把 matcher 临时搬到 ``self.device``。'''
+        if not self.is_offload_cpu:
+            return
+        inner = self._getInnerMatcher()
+        if inner is None:
+            return
+        try:
+            inner.to(self.device)
+        except Exception:
+            pass
+        self._setWrapperDevice(self.device)
+
+    def _offloadMatcherToCPU(self) -> None:
+        '''offload 模式下推理结束后把 matcher 卸载回 CPU。'''
+        inner = self._getInnerMatcher()
+        if inner is not None:
+            try:
+                inner.to('cpu')
+            except Exception:
+                pass
+        self._setWrapperDevice('cpu')
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
 
     @torch.no_grad()
     def detect(
@@ -157,11 +224,16 @@ class Detector(object):
             image1 = toRGBImage(image1)
             image2 = toRGBImage(image2)
 
-        result = self.matcher(
-            image1, image2,
-            K0=K0, K1=K1,
-            dist0=dist0, dist1=dist1,
-        )
+        self._moveMatcherToDevice()
+        try:
+            result = self.matcher(
+                image1, image2,
+                K0=K0, K1=K1,
+                dist0=dist0, dist1=dist1,
+            )
+        finally:
+            if self.is_offload_cpu:
+                self._offloadMatcherToCPU()
         return result
 
     @torch.no_grad()
