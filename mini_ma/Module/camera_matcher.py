@@ -10,6 +10,7 @@ from camera_control.Module.nvdiffrast_renderer import NVDiffRastRenderer
 
 from mini_ma.Method.data import toTensor, toGPU
 from mini_ma.Method.path import createFileFolder
+from mini_ma.Method.render import renderMatchResult
 from mini_ma.Module.detector import Detector
 
 
@@ -147,7 +148,6 @@ class CameraMatcher(object):
         if render:
             concat_vis = CameraMatcher.renderMatchResult(
                 image,
-                detector,
                 render_dict,
                 match_result,
             )
@@ -190,7 +190,6 @@ class CameraMatcher(object):
             if render:
                 concat_vis = CameraMatcher.renderMatchResult(
                     image,
-                    detector,
                     render_dict,
                     match_result,
                 )
@@ -318,11 +317,10 @@ class CameraMatcher(object):
     @staticmethod
     def renderMatchResult(
         image: np.ndarray,
-        detector: Detector,
         render_dict: dict,
         match_result: dict,
     ) -> np.ndarray:
-        img_vis = detector.renderMatchResult(
+        img_vis = renderMatchResult(
             match_result,
             image,
             render_dict['image_cv'],

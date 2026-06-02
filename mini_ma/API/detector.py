@@ -4,6 +4,7 @@ import numpy as np
 
 from typing import Any, Dict, Optional, Union
 
+from mini_ma.Method.render import renderMatchResult
 from mini_ma.Module.detector import Detector
 
 
@@ -48,3 +49,20 @@ def detect(
 ) -> Union[Dict[str, Any], None]:
     """Match two BGR images and return the match result dict (or None)."""
     return detector.detect(image1, image2)
+
+
+def render_match_result(
+    match_result: Dict[str, Any],
+    image1: Union[str, np.ndarray],
+    image2: Union[str, np.ndarray],
+    show_inliers_only: bool = False,
+    dpi: int = 150,
+) -> np.ndarray:
+    """Render a MINIMA match result as a BGR image."""
+    return renderMatchResult(
+        match_result=match_result,
+        img0=image1,
+        img1=image2,
+        show_inliers_only=show_inliers_only,
+        dpi=dpi,
+    )

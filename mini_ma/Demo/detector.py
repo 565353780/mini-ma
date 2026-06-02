@@ -2,6 +2,7 @@ import os
 import cv2
 
 from mini_ma.Method.path import createFileFolder
+from mini_ma.Method.render import renderMatchResult
 from mini_ma.Module.detector import Detector
 
 
@@ -54,7 +55,7 @@ def demo_folders():
             except:
                 print(key, value)
 
-        img_vis = detector.renderMatchResult(
+        img_vis = renderMatchResult(
             match_result,
             image1_file_path,
             image2_file_path,
@@ -63,7 +64,7 @@ def demo_folders():
         createFileFolder(save_path)
         cv2.imwrite(save_path, img_vis)
 
-        img_vis_inliers = detector.renderMatchResult(
+        img_vis_inliers = renderMatchResult(
             match_result,
             image1_file_path,
             image2_file_path,
@@ -98,7 +99,7 @@ def demo():
         except:
             print(key, value)
 
-    img_vis = detector.renderMatchResult(
+    img_vis = renderMatchResult(
         match_result,
         image1_file_path,
         image2_file_path,
@@ -107,7 +108,7 @@ def demo():
     createFileFolder(save_path)
     cv2.imwrite(save_path, img_vis)
 
-    img_vis_inliers = detector.renderMatchResult(
+    img_vis_inliers = renderMatchResult(
         match_result,
         image1_file_path,
         image2_file_path,
