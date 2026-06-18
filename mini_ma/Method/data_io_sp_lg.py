@@ -148,6 +148,119 @@ class DataIOWrapper(nn.Module):
 
         return mkpts0, mkpts1, mconf, match_time
 
+    def _preprocess_pair(self, img0, img1, K0=None, K1=None, dist0=None, dist1=None):
+        """单对图像预处理原子：复用 ``preprocess_image`` 的 resize/df/gray 逻辑。
+
+        返回 (img0_tensor, img1_tensor, scale0, scale1)；不触碰模型，便于批量
+        collate 复用同一份预处理实现。sp_lg 路径默认 ``padding=False``，故不返回
+        mask（与 ``match_images`` 的单对路径一致）。
+        """
+        img0_tensor, scale0, _mask0, _new_K0, _img0_undistorted = self.preprocess_image(
+            img0, self.device, resize=self.img0_size, df=self.df,
+            padding=self.padding, cam_K=K0, dist=dist0)
+        img1_tensor, scale1, _mask1, _new_K1, _img1_undistorted = self.preprocess_image(
+            img1, self.device, resize=self.img1_size, df=self.df,
+            padding=self.padding, cam_K=K1, dist=dist1)
+        return img0_tensor, img1_tensor, scale0, scale1
+
+    @torch.no_grad()
+    def collate_image_pairs(self, pairs):
+        """把 ``[(img0, img1), ...]`` 逐对预处理成模型输入。
+
+        每对图像可有不同分辨率，sp_lg 的 batched forward 逐图 extract，因此这里
+        无需 pad 到统一尺寸：返回的是「逐图 tensor 列表」+「逐对 scale」。
+
+        返回 dict:
+            image0: List[[1, C, H, W]]
+            image1: List[[1, C, H, W]]
+            scales0: List[np.ndarray([sx, sy])]
+            scales1: List[np.ndarray([sx, sy])]
+        """
+        image0_list = []
+        image1_list = []
+        scales0 = []
+        scales1 = []
+        for pair in pairs:
+            img0, img1 = pair[0], pair[1]
+            img0_tensor, img1_tensor, scale0, scale1 = self._preprocess_pair(img0, img1)
+            image0_list.append(img0_tensor)
+            image1_list.append(img1_tensor)
+            scales0.append(scale0)
+            scales1.append(scale1)
+        return {
+            'image0': image0_list,
+            'image1': image1_list,
+            'scales0': scales0,
+            'scales1': scales1,
+        }
+
+    @torch.no_grad()
+    def match_images_batch(self, image0_list, image1_list):
+        """对底层模型做单次 batched 调用，返回 per-view 原始结果列表。
+
+        依赖 ``self.model.forward_batch``（见 sp_lg ``Matching``），其返回长度为 N
+        的 [{matching_scores, keypoints0, keypoints1}] 列表，坐标为模型输入尺度。
+        """
+        torch.cuda.synchronize()
+        start = time.time()
+        preds = self.model.forward_batch({'image0': image0_list, 'image1': image1_list})
+        torch.cuda.synchronize()
+        match_time = time.time() - start
+
+        per_match_time = match_time / max(1, len(preds))
+        outputs = []
+        for pred in preds:
+            mkpts0 = pred['keypoints0'].cpu().numpy()
+            mkpts1 = pred['keypoints1'].cpu().numpy()
+            mconf = pred['matching_scores'].detach().cpu().numpy()
+            outputs.append((mkpts0, mkpts1, mconf, per_match_time))
+        return outputs
+
+    @staticmethod
+    def _assemble_match_dict(mkpts0, mkpts1, mconf, scale0, scale1, img0, img1, match_time):
+        """把单视角 batched 输出还原成与 ``from_cv_imgs`` 完全一致的结果 dict。"""
+        mkpts0 = mkpts0 * scale0
+        mkpts1 = mkpts1 * scale1
+        matches = np.concatenate([mkpts0, mkpts1], axis=1)
+        return {
+            'matches': matches,
+            'mkpts0': mkpts0,
+            'mkpts1': mkpts1,
+            'mconf': mconf,
+            'img0': img0,
+            'img1': img1,
+            'match_time': match_time,
+        }
+
+    @torch.no_grad()
+    def from_cv_imgs_batch(self, pairs):
+        """批量版 ``from_cv_imgs``：一次 GPU forward 处理 N 对，返回 List[dict]。
+
+        每个 dict 与单对 ``from_cv_imgs`` 的字段/坐标语义完全一致，因此下游
+        ``CameraMatcher`` / ``MeshDeformer`` 无需任何改动即可消费。
+        """
+        if len(pairs) == 0:
+            return []
+
+        collated = self.collate_image_pairs(pairs)
+        raw_outputs = self.match_images_batch(
+            collated['image0'], collated['image1'])
+
+        results = []
+        for i, pair in enumerate(pairs):
+            mkpts0, mkpts1, mconf, match_time = raw_outputs[i]
+            results.append(self._assemble_match_dict(
+                mkpts0=mkpts0,
+                mkpts1=mkpts1,
+                mconf=mconf,
+                scale0=collated['scales0'][i],
+                scale1=collated['scales1'][i],
+                img0=pair[0],
+                img1=pair[1],
+                match_time=match_time,
+            ))
+        return results
+
     def pad_bottom_right(self, inp, pad_size, ret_mask=False):
         assert isinstance(pad_size, int) and pad_size >= max(inp.shape[-2:]), f"{pad_size} < {max(inp.shape[-2:])}"
         mask = None

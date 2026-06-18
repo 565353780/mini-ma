@@ -2,7 +2,7 @@ import os
 
 import numpy as np
 
-from typing import Any, Dict, Optional, Union
+from typing import Any, Dict, List, Optional, Tuple, Union
 
 from mini_ma.Method.render import renderMatchResult
 from mini_ma.Module.detector import Detector
@@ -49,6 +49,21 @@ def detect(
 ) -> Union[Dict[str, Any], None]:
     """Match two BGR images and return the match result dict (or None)."""
     return detector.detect(image1, image2)
+
+
+def detect_batch(
+    detector: Detector,
+    image_pairs: List[Tuple[np.ndarray, np.ndarray]],
+    chunk_size: int = 16,
+) -> List[Union[Dict[str, Any], None]]:
+    """批量匹配多对 BGR 图像，返回与 ``detect`` 同构的结果列表。
+
+    每个元素的字段/坐标语义与单对 ``detect`` 完全一致，便于上层（如
+    ``pixel-align-deform`` 的 ``query_deform_field``）以 ``chunk_size`` 为单位
+    做批量推理而无需改动下游消费逻辑。底层不支持真 batch 的 matcher 会自动逐对
+    回退。
+    """
+    return detector.detect_batch(image_pairs, chunk_size=chunk_size)
 
 
 def render_match_result(

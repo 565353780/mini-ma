@@ -266,6 +266,64 @@ class Detector(object):
                 self._offloadMatcherToCPU()
         return result
 
+    def _supports_batch(self) -> bool:
+        """仅当底层 wrapper.model 暴露 ``forward_batch`` 时才走真 batch 路径。
+
+        目前只有 ``sp_lg`` 的 ``Matching`` 实现了 ``forward_batch``；其余 matcher
+        （roma/loftr/xoftr）保持单对路径，由 ``detect_batch`` 自动 fallback。
+        """
+        wrapper = getattr(self.matcher, '__self__', None)
+        if wrapper is None:
+            return False
+        inner = getattr(wrapper, 'model', None)
+        return inner is not None and hasattr(inner, 'forward_batch')
+
+    @torch.no_grad()
+    def detect_batch(
+        self,
+        image_pairs: list,
+        chunk_size: int = 16,
+    ) -> list:
+        """批量匹配多对 ``(image1, image2)``，返回与 ``detect`` 同构的结果列表。
+
+        - 真正的 batch 推理只在底层支持 ``forward_batch`` 时启用（当前 sp_lg）；
+          其他 matcher 自动逐对回退到 ``detect``，保证行为兼容。
+        - ``chunk_size`` 控制单次 GPU forward 的对数，按需切片，避免一次性塞入过多
+          视图导致显存峰值过高。
+        - matcher 的 GPU 搬运沿用既有 ``is_matcher_pinned`` / offload 机制：本函数
+          内统一搬到 GPU 一次，结束后按 offload 配置卸载。
+        """
+        if len(image_pairs) == 0:
+            return []
+
+        if not self._supports_batch():
+            # fallback：逐对调用 detect（detect 自身处理 pin / offload）。
+            return [self.detect(img1, img2) for img1, img2 in image_pairs]
+
+        wrapper = self.matcher.__self__
+
+        externally_pinned = self.is_matcher_pinned
+        if not externally_pinned:
+            self._moveMatcherToDevice()
+
+        results: list = []
+        try:
+            for start in range(0, len(image_pairs), max(1, chunk_size)):
+                chunk = image_pairs[start:start + max(1, chunk_size)]
+
+                gray_pairs = []
+                for img1, img2 in chunk:
+                    if self.is_gray:
+                        gray_pairs.append((toGrayImage(img1), toGrayImage(img2)))
+                    else:
+                        gray_pairs.append((toRGBImage(img1), toRGBImage(img2)))
+
+                results.extend(wrapper.from_cv_imgs_batch(gray_pairs))
+        finally:
+            if not externally_pinned and self.is_offload_cpu:
+                self._offloadMatcherToCPU()
+        return results
+
     @torch.no_grad()
     def detectImageFilePair(
         self,
