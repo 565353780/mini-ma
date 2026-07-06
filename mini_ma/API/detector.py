@@ -28,17 +28,22 @@ def build_detector(
     model_file_path: str = minima_model_file_path,
     device: str = 'cuda:0',
     is_offload_cpu: bool = True,
+    superpoint_weights_path: Optional[str] = None,
+    lightglue_weights_path: Optional[str] = None,
 ) -> Detector:
     """Build a MINIMA pixel-matcher :class:`Detector`.
 
     传参与 ``pixel-align-deform/video_pipeline.py`` 中的 ``PixelMatcher``
-    构造保持一致。
+    构造保持一致。``superpoint_weights_path`` / ``lightglue_weights_path``
+    可选, 用于 sp_lg 基础权重本地加载; 未提供时与同目录 / 环境变量 / 网络回退。
     """
     return Detector(
         method=method,
         model_file_path=model_file_path,
         device=device,
         is_offload_cpu=is_offload_cpu,
+        superpoint_weights_path=superpoint_weights_path,
+        lightglue_weights_path=lightglue_weights_path,
     )
 
 

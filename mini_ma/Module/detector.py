@@ -19,6 +19,8 @@ class Detector(object):
         ckpt2: Optional[str] = None,
         device: Optional[str] = None,
         is_offload_cpu: bool = False,
+        superpoint_weights_path: Optional[str] = None,
+        lightglue_weights_path: Optional[str] = None,
     ) -> None:
         """
         初始化检测器
@@ -51,6 +53,8 @@ class Detector(object):
                 self.fine_threshold = fine_threshold
                 self.thr = thr
                 self.ckpt2 = ckpt2
+                self.superpoint_weights_path = superpoint_weights_path
+                self.lightglue_weights_path = lightglue_weights_path
 
         self.args = Args()
 

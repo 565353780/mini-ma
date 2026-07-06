@@ -1,7 +1,8 @@
 import collections.abc as collections
+import os
 from pathlib import Path
 from types import SimpleNamespace
-from typing import Callable, List, Optional, Tuple, Union
+from typing import Callable, List, Optional, Sequence, Tuple, Union
 
 import cv2
 import kornia
@@ -126,6 +127,41 @@ def load_image(path: Path, resize: int = None, **kwargs) -> torch.Tensor:
     if resize is not None:
         image, _ = resize_image(image, resize, **kwargs)
     return numpy_image_to_torch(image)
+
+
+def load_pretrained_state_dict(
+    url: str,
+    weights_path: Optional[str] = None,
+    env_keys: Sequence[str] = (),
+    hub_file_name: Optional[str] = None,
+):
+    """优先从本地路径加载权重; 本地不存在时回退 ``torch.hub`` 网络下载。
+
+    查找顺序:
+      1. ``weights_path`` 显式传入
+      2. ``env_keys`` 对应的环境变量
+      3. ``$TORCH_HOME/hub/checkpoints/{hub_file_name}``
+      4. 包内 ``weights/{hub_file_name}``
+      5. ``torch.hub.load_state_dict_from_url(url)``
+    """
+    fname = hub_file_name or os.path.basename(str(url).split('?')[0])
+    candidates: List[str] = []
+    if weights_path:
+        candidates.append(weights_path)
+    for key in env_keys:
+        env_val = os.environ.get(key, '').strip()
+        if env_val:
+            candidates.append(env_val)
+    torch_home = os.environ.get('TORCH_HOME', '').strip()
+    if torch_home:
+        candidates.append(os.path.join(torch_home, 'hub', 'checkpoints', fname))
+    candidates.append(str(Path(__file__).parent / 'weights' / fname))
+
+    for path in candidates:
+        if path and os.path.isfile(path):
+            return torch.load(path, map_location='cpu')
+
+    return torch.hub.load_state_dict_from_url(url, file_name=fname)
 
 
 class Extractor(torch.nn.Module):

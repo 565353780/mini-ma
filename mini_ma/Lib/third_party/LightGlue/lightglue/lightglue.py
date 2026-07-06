@@ -8,6 +8,8 @@ import torch
 import torch.nn.functional as F
 from torch import nn
 
+from .utils import load_pretrained_state_dict
+
 try:
     from flash_attn.modules.mha import FlashCrossAttention
 except ModuleNotFoundError:
@@ -408,8 +410,11 @@ class LightGlue(nn.Module):
         state_dict = None
         if features is not None:
             fname = f"{conf.weights}_{self.version.replace('.', '-')}.pth"
-            state_dict = torch.hub.load_state_dict_from_url(
-                self.url.format(self.version, features), file_name=fname
+            state_dict = load_pretrained_state_dict(
+                url=self.url.format(self.version, features),
+                weights_path=getattr(conf, 'weights_path', None),
+                env_keys=('LIGHTGLUE_WEIGHTS', 'MINIMA_LIGHTGLUE_WEIGHTS'),
+                hub_file_name=fname,
             )
             self.load_state_dict(state_dict, strict=False)
         elif conf.weights is not None:

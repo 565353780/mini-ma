@@ -70,6 +70,34 @@ def load_loftr(args, test_orginal_megadepth=False):
     return matcher
 
 
+def _resolve_pretrained_weight_path(*candidates, env_keys=()):
+    """返回第一个存在的本地权重路径, 均不存在则 None (走网络回退)。"""
+    for path in candidates:
+        if path and os.path.isfile(path):
+            return path
+    for key in env_keys:
+        env_val = os.environ.get(key, '').strip()
+        if env_val and os.path.isfile(env_val):
+            return env_val
+    return None
+
+
+def _sp_lg_base_weight_paths(args):
+    """解析 SuperPoint / LightGlue 基础权重本地路径 (与 minima ckpt 同目录优先)。"""
+    ckpt_dir = os.path.dirname(args.ckpt) if getattr(args, 'ckpt', None) else ''
+    superpoint_path = _resolve_pretrained_weight_path(
+        getattr(args, 'superpoint_weights_path', None),
+        os.path.join(ckpt_dir, 'superpoint_v1.pth') if ckpt_dir else None,
+        env_keys=('SUPERPOINT_WEIGHTS', 'MINIMA_SUPERPOINT_WEIGHTS'),
+    )
+    lightglue_path = _resolve_pretrained_weight_path(
+        getattr(args, 'lightglue_weights_path', None),
+        os.path.join(ckpt_dir, 'superpoint_lightglue_v0-1_arxiv.pth') if ckpt_dir else None,
+        env_keys=('LIGHTGLUE_WEIGHTS', 'MINIMA_LIGHTGLUE_WEIGHTS'),
+    )
+    return superpoint_path, lightglue_path
+
+
 def load_sp_lg(args, test_orginal_megadepth=False):
     """加载 SuperPoint + LightGlue 模型"""
     _lightglue_path = os.path.join(_third_party_path, 'LightGlue')
@@ -287,6 +315,11 @@ def load_sp_lg(args, test_orginal_megadepth=False):
         "filter_threshold": 0.1,
         "weights": None,
     }
+    superpoint_weights_path, lightglue_weights_path = _sp_lg_base_weight_paths(args)
+    if superpoint_weights_path:
+        sp_conf["weights_path"] = superpoint_weights_path
+    if lightglue_weights_path:
+        lg_conf["weights_path"] = lightglue_weights_path
     matcher = Matching(sp_conf, lg_conf)
     config = get_cfg_defaults(inference=True)
     config = lower_config(config)

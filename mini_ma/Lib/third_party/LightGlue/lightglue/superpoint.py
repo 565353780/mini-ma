@@ -46,7 +46,7 @@ import torch
 from kornia.color import rgb_to_grayscale
 from torch import nn
 
-from .utils import Extractor
+from .utils import Extractor, load_pretrained_state_dict
 
 
 def simple_nms(scores, nms_radius: int):
@@ -142,7 +142,14 @@ class SuperPoint(Extractor):
         )
 
         url = "https://github.com/cvg/LightGlue/releases/download/v0.1_arxiv/superpoint_v1.pth"  # noqa
-        self.load_state_dict(torch.hub.load_state_dict_from_url(url))
+        weights_path = getattr(self.conf, 'weights_path', None)
+        state_dict = load_pretrained_state_dict(
+            url=url,
+            weights_path=weights_path,
+            env_keys=('SUPERPOINT_WEIGHTS', 'MINIMA_SUPERPOINT_WEIGHTS'),
+            hub_file_name='superpoint_v1.pth',
+        )
+        self.load_state_dict(state_dict)
 
         if self.conf.max_num_keypoints is not None and self.conf.max_num_keypoints <= 0:
             raise ValueError("max_num_keypoints must be positive or None")
