@@ -11,21 +11,68 @@ from mini_ma.Module.detector import Detector
 home = os.environ['HOME']
 minima_model_file_path = f'{home}/chLi/Model/MINIMA/minima_lightglue.pth'
 
+# sp_lg 基础特征权重 (SuperPoint / LightGlue) 默认路径。统一采用
+# chLi/Model/<模型名>/<权重> 布局, 全部在本 submodule API 里定义, 由上层透传到
+# run.py。SuperPoint 权重与 camera-pose-estimate (vggsfm-ba API) 共用同一路径,
+# 不重复保存。
+superpoint_model_file_path = f'{home}/chLi/Model/SuperPoint/superpoint_v1.pth'
+lightglue_model_file_path = (
+    f'{home}/chLi/Model/LightGlue/superpoint_lightglue_v0-1_arxiv.pth')
+
+# 服务本地 ckpts 目录 (若权重放这里则优先命中)。可用 FAD_CKPTS_DIR 覆盖。
+_CKPTS_DIR_ENV = 'FAD_CKPTS_DIR'
+
+
+def _first_existing(*paths: str) -> str:
+    for path in paths:
+        if path and os.path.isfile(path):
+            return path
+    return paths[0]
+
+
+def _ckpts_dir() -> Optional[str]:
+    ckpts_dir = os.environ.get(_CKPTS_DIR_ENV, '').strip()
+    return ckpts_dir or None
+
 
 def get_default_model_paths() -> dict:
-    """Return the default MINIMA pixel-matcher model paths.
+    """Return the default MINIMA + SuperPoint + LightGlue model paths.
 
     与 ``flux_mv.API.sampler.get_default_model_paths`` 风格保持一致，便于上层
-    ``video_pipeline.queryModelPaths()`` 统一聚合所有模块的模型路径。
+    ``video_pipeline.queryModelPaths()`` 统一聚合所有模块的模型路径。所有权重
+    默认路径均在本 submodule API 脚本里定义 (chLi/Model 约定)。若设置了
+    ``FAD_CKPTS_DIR`` 且该目录下存在同名权重则优先命中。
     """
+    ckpts_dir = _ckpts_dir()
+
+    def _resolve(file_name: str, default_path: str) -> str:
+        if ckpts_dir is not None:
+            return _first_existing(
+                os.path.join(ckpts_dir, file_name), default_path)
+        return default_path
+
     return {
-        'model_file_path': minima_model_file_path,
+        'model_file_path': _resolve(
+            'minima_lightglue.pth', minima_model_file_path),
+        'superpoint_model_file_path': _resolve(
+            'superpoint_v1.pth', superpoint_model_file_path),
+        'lightglue_model_file_path': _resolve(
+            'superpoint_lightglue_v0-1_arxiv.pth', lightglue_model_file_path),
     }
+
+
+def query_missing_model_files() -> List[str]:
+    """检查 MINIMA + SuperPoint + LightGlue 默认权重是否就绪, 返回缺失路径。"""
+    return [
+        path
+        for path in get_default_model_paths().values()
+        if not os.path.isfile(path)
+    ]
 
 
 def build_detector(
     method: str = 'sp_lg',
-    model_file_path: str = minima_model_file_path,
+    model_file_path: Optional[str] = None,
     device: str = 'cuda:0',
     is_offload_cpu: bool = True,
     superpoint_weights_path: Optional[str] = None,
@@ -34,16 +81,20 @@ def build_detector(
     """Build a MINIMA pixel-matcher :class:`Detector`.
 
     传参与 ``pixel-align-deform/video_pipeline.py`` 中的 ``PixelMatcher``
-    构造保持一致。``superpoint_weights_path`` / ``lightglue_weights_path``
-    可选, 用于 sp_lg 基础权重本地加载; 未提供时与同目录 / 环境变量 / 网络回退。
+    构造保持一致。``model_file_path`` / ``superpoint_weights_path`` /
+    ``lightglue_weights_path`` 为 None 时, 回退本 API 脚本
+    ``get_default_model_paths()`` 定义的默认路径 (chLi/Model 约定)。
     """
+    defaults = get_default_model_paths()
     return Detector(
         method=method,
-        model_file_path=model_file_path,
+        model_file_path=model_file_path or defaults['model_file_path'],
         device=device,
         is_offload_cpu=is_offload_cpu,
-        superpoint_weights_path=superpoint_weights_path,
-        lightglue_weights_path=lightglue_weights_path,
+        superpoint_weights_path=(
+            superpoint_weights_path or defaults['superpoint_model_file_path']),
+        lightglue_weights_path=(
+            lightglue_weights_path or defaults['lightglue_model_file_path']),
     )
 
 
