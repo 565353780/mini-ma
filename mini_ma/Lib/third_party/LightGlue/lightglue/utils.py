@@ -161,6 +161,10 @@ def load_pretrained_state_dict(
         if path and os.path.isfile(path):
             return torch.load(path, map_location='cpu')
 
+    # 与 Services/ 下其它库统一: 权重完全依赖本地 chLi/Model, 本地缺失时才回退
+    # torch.hub 网络下载 (带告警), 避免离线环境静默失败难以排查。
+    print(f'[WARN][lightglue.utils] local weight not found: {fname} '
+          f'(searched {candidates}); falling back to network download from {url}')
     return torch.hub.load_state_dict_from_url(url, file_name=fname)
 
 
